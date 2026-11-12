@@ -25,7 +25,9 @@ python collect_results.py --run-root "$RUN_ROOT"
 
 `--check` 核对冻结任务和分词器指纹。`--smoke` 在独立的 `smoke/` 目录执行一个真实 GPU 更新和验证。仅在 CPU 上验收时，安装 `requirements-cpu.txt`，运行 pytest，再用 `--model-dir metadata/Qwen3.5-2B --check` 校验随库元数据。
 
-默认队列依次运行 `ucf → grpo4 → gigpo → ucf-merge → ucf-success → ucf-m1 → ucf-uniform → no-part-b → grpo8`。每项默认 seed 42、400 步。可在 `configs/queue.json` 为每项设置 `seed` 和绝对步数 `until`。重跑同一命令会跳过达标项，从已有存档恢复未完成项。失败重试一次，仍失败则记下原因并继续。进度、最近固定验证与失败记录在 `RUN_ROOT/queue_status.json`，汇总表为 `RUN_ROOT/results.md` 和 `RUN_ROOT/results.csv`。[采集、训练目标与指标](docs/EXPERIMENTS.md)
+2B Sokoban 默认队列先跑 `ucf`（每条轨迹最多生成 **10,240 token**），再跑 `ucf-20480`（**20,480 token**）。两项都从同一个原始模型独立训练 400 步，使用 seed 42 和相同的 UCF V3.1 参数，各自保存检查点和评估结果。随后依次运行 `grpo4 → gigpo → ucf-merge → ucf-success → ucf-m1 → ucf-uniform → no-part-b → grpo8`。
+
+可在 `configs/queue.json` 为每项设置 `seed` 和绝对步数 `until`（默认 42 和 400），并用 `size`、`env` 指定适用的模型规模和环境。重跑同一命令会跳过达标项，从已有存档恢复未完成项。失败重试一次，仍失败则记下原因并继续。进度、最近固定验证与失败记录在 `RUN_ROOT/queue_status.json`，汇总表为 `RUN_ROOT/results.md` 和 `RUN_ROOT/results.csv`。[采集、训练目标与指标](docs/EXPERIMENTS.md)
 
 ## 使用方调整的位置
 

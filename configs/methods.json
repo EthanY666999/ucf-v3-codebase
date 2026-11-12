@@ -2,6 +2,10 @@
   "ucf": {
     "method": "ucf"
   },
+  "ucf-20480": {
+    "method": "ucf",
+    "max_response_tokens": 20480
+  },
   "grpo4": {
     "method": "grpo",
     "flat_group_size": 4

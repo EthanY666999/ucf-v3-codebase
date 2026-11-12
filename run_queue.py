@@ -92,6 +92,8 @@ def run_queue(args):
     entries = []
     methods = read_json(ROOT / 'configs/methods.json')
     for item in read_json(args.queue):
+        if item.get('size', args.size) != args.size or item.get('env', args.env) != args.env:
+            continue
         method = item['method']
         seed = item.get('seed', 42)
         until = item.get('until', 400)

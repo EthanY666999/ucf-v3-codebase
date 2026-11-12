@@ -46,6 +46,7 @@ class ScriptedEngine:
 
 @pytest.mark.parametrize("alias,estimator,m,prior,beta,override", [
     ("ucf", "unbiased", 3, "inverse_turn", .25, True),
+    ("ucf-20480", "unbiased", 2, "inverse_turn", .25, False),
     ("ucf-merge", "merge", 2, "inverse_turn", .25, False),
     ("ucf-success", "success", 2, "inverse_turn", .25, False),
     ("ucf-m1", "unbiased", 1, "inverse_turn", .25, False),

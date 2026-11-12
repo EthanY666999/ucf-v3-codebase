@@ -1,5 +1,6 @@
 [
   {"method": "ucf"},
+  {"method": "ucf-20480", "size": "2b", "env": "sokoban"},
   {"method": "grpo4"},
   {"method": "gigpo"},
   {"method": "ucf-merge"},

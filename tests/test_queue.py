@@ -27,13 +27,28 @@ def config(command):
     return json.loads(subprocess.check_output([*command, '--print-config'], text=True))
 
 
-def test_default_queue_order():
-    assert [e['method'] for e in run_queue.read_json(run_queue.ROOT / 'configs/queue.json')] == [
-        'ucf', 'grpo4', 'gigpo', 'ucf-merge', 'ucf-success', 'ucf-m1', 'ucf-uniform', 'no-part-b', 'grpo8']
+@pytest.mark.parametrize('size,env', [
+    ('2b', 'sokoban'), ('4b', 'sokoban'), ('2b', 'flh'), ('4b', 'flh'), ('4b', 'webshop'),
+])
+def test_default_queue_order(size, env, tmp_path, monkeypatch):
+    args = queue(tmp_path, [])
+    args.size, args.env, args.queue = size, env, run_queue.ROOT / 'configs/queue.json'
+    def stop_at_first_launch(*args):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(run_queue, 'run_child', stop_at_first_launch)
+    with pytest.raises(KeyboardInterrupt):
+        run_queue.run_queue(args)
+    items = run_queue.read_json(args.run_root / 'queue_status.json')['items']
+    expected = ['ucf', 'grpo4', 'gigpo', 'ucf-merge', 'ucf-success', 'ucf-m1', 'ucf-uniform', 'no-part-b', 'grpo8']
+    if (size, env) == ('2b', 'sokoban'):
+        expected.insert(1, 'ucf-20480')
+        assert all((e['seed'], e['until']) == (42, 400) for e in items[:2])
+    assert [e['method'] for e in items] == expected
 
 
 def test_queue_retries_advances_and_skips_complete(monkeypatch, tmp_path):
-    args = queue(tmp_path, [dict(method='ucf', until=25, seed=43), dict(method='grpo4'), dict(method='gigpo')])
+    args = queue(tmp_path, [dict(method='ucf', until=25, seed=43), dict(method='ucf-20480', until=25, seed=43),
+                            dict(method='grpo4'), dict(method='gigpo')])
     calls = []
     def mock_run(command, log, lock):
         cfg = config(command)
@@ -43,7 +58,7 @@ def test_queue_retries_advances_and_skips_complete(monkeypatch, tmp_path):
         calls.append((method, resume))
         dump(out / 'launch.json', cfg)
         (out / 'checkpoint.pt').touch()
-        if method == 'grpo4' or (method == 'ucf' and not resume):
+        if method == 'grpo4' or (method == 'ucf-20480' and not resume):
             dump(out / 'status.json', dict(step=10, status='training'))
             raise ValueError('mock device failure')
         step = int(command[command.index('--until') + 1])
@@ -54,11 +69,20 @@ def test_queue_retries_advances_and_skips_complete(monkeypatch, tmp_path):
 
     monkeypatch.setattr(run_queue, 'run_child', mock_run)
     assert run_queue.run_queue(args) == 1
-    assert calls == [('ucf', False), ('ucf', True), ('grpo4', False), ('grpo4', True), ('gigpo', False)]
+    assert calls == [('ucf', False), ('ucf-20480', False), ('ucf-20480', True), ('grpo4', False), ('grpo4', True),
+                     ('gigpo', False)]
     state = run_queue.read_json(args.run_root / 'queue_status.json')
     assert state['current_item'] is None
-    first, second, third = state['items']
+    first, long_budget, second, third = state['items']
     assert (first['completed_steps'], first['latest_validation']['step'], first['state']) == (25, 25, 'complete')
+    assert (long_budget['completed_steps'], long_budget['state']) == (25, 'complete')
+    short, long = [run_queue.read_json(args.run_root / 'train' / e['run_label'] / 'launch.json')
+                   for e in (first, long_budget)]
+    assert (short['method'], short['max_response_tokens']) == ('ucf', 10240)
+    assert short['run_label'] != long['run_label']
+    assert long == dict(short, max_response_tokens=20480, run_label=long_budget['run_label'])
+    labels = {r['run'] for r in collect_results.collect_rows(args.run_root) if r['split'] == 'validation'}
+    assert {short['run_label'], long['run_label']} <= labels
     assert second['state'] == 'failed' and 'device failure' in second['attempts'][-1]['error']
     assert third['state'] == 'complete'
     calls.clear()
