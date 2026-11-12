@@ -178,3 +178,33 @@ def test_webshop_v3_collector_full_complement_on_cpu(server,tmp_path,monkeypatch
     for b, _, _ in weights:
         if hasattr(b,'ucf'):
             assert b.ucf['rho']==.5 and len(b.ids)==len(b.old_logprobs)==len(b.mask)
+
+
+def test_full_catalog_requires_matching_index_and_paths(tmp_path):
+    from scripts.configure_webshop_full import configure
+    from scripts.webshop_server import full_catalog_identity
+    utils = tmp_path/'web_agent_site/utils.py'
+    utils.parent.mkdir()
+    utils.write_text("DEFAULT_ATTR_PATH = join(BASE_DIR, '../data/items_ins_v2_1000.json')\n"
+                     "DEFAULT_FILE_PATH = join(BASE_DIR, '../data/items_shuffle_1000.json')\n")
+    configure(tmp_path)
+    assert '1000' not in utils.read_text()
+    once = utils.read_bytes()
+    configure(tmp_path)
+    assert utils.read_bytes() == once
+    env = NS(server=NS(all_products=[{'asin':'X'}],search_engine=NS(num_docs=1)))
+    with pytest.raises(ValueError):
+        full_catalog_identity(env)
+    env.server.all_products *= 100001
+    with pytest.raises(ValueError):
+        full_catalog_identity(env)
+    env.server.search_engine.num_docs = 100001
+    assert full_catalog_identity(env)['products'] == 100001
+
+
+def test_only_visible_actions_reach_simulator(server):
+    url, sim = server
+    env = WebShopEnv({'goal_id':1500},{'webshop_url':url,'webshop_catalog':sim.catalog})
+    assert env.resolve('CLICK[buy now]') == 0
+    env.step('SEARCH[bag]')
+    assert env.resolve('search[hidden]')==0 and env.resolve('CLICK[BLUE BAG]')=='click[blue bag]'

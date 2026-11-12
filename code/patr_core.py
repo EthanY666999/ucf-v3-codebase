@@ -271,7 +271,9 @@ def apply_response(b, out, tokenizer, cfg):
                             **({'anchor_before': b.env.anchor()} if hasattr(b.env,'anchor') else {})))
         return
     action = b.agent.update_from_model(text).action
-    if getattr(b.env, 'environment', None) != 'webshop':
+    if getattr(b.env, 'environment', None) == 'webshop':
+        action = b.env.resolve(action)
+    else:
         action = int(action)
     b.actions.append(action)
     before_anchor=b.env.anchor() if hasattr(b.env,"anchor") else None

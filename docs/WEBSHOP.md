@@ -13,9 +13,12 @@ cd /mnt/benchmarks/WebShop
 git checkout 64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd
 conda create -n webshop-upstream python=3.8.13 -y
 conda activate webshop-upstream
+python "$UCF_CODE/scripts/configure_webshop_full.py" "$PWD"
 bash setup.sh -d all
 PYTHONPATH="$PWD" python "$UCF_CODE/scripts/webshop_server.py" --port 8765
 ```
+
+上游即使下载了全量文件，默认仍指向 1,000 件商品。配置脚本只在指定的官方 checkout 中切换商品与属性两个文件名，需在构建索引前执行。服务启动时会比对商品数和 Lucene 文档数，并将商品 ID 哈希写入目录身份。
 
 ## 2. 在训练终端验收
 

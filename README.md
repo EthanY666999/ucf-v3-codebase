@@ -10,7 +10,7 @@
 | 4B | `flh` | 20 | 10,240 | 难版 FrozenLake，冻结 9–12 边长、最短解 7–16 步的地图 |
 | 4B | `webshop` | 15 | 10,240 | 官方文本模拟器适配，自由搜索词和可见按钮；需要单独准备商品目录 |
 
-4B 三组均需在合作者机器上做首轮 GPU 冒烟。仓库附网格任务、地图校验和及两款官方 tokenizer 的固定版本。模型权重和 WebShop 商品索引由运行方提供。[安装与硬件](docs/INSTALL.md) · [WebShop 搭建与验收](docs/WEBSHOP.md)
+4B 三组均需在合作者机器上做首轮 GPU 冒烟。仓库附网格任务、地图校验和及两款官方 tokenizer 的固定版本。模型权重和 WebShop 商品索引由运行方提供。[安装与硬件](docs/INSTALL.md) · [WebShop 搭建与验收](docs/WEBSHOP.md) · [已完成的 CPU 验收](docs/ACCEPTANCE.md)
 
 ## 从克隆到第一组实验
 

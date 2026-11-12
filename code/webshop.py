@@ -93,8 +93,22 @@ class WebShopEnv:
     def success(self):
         return self.page['done'] and self.raw_score == 1.
 
+    def resolve(self, action):
+        match = COMMAND.fullmatch(str(action))
+        if not match:
+            return 0
+        name, arg = match.group(1).lower(), match.group(2).strip()
+        available = self.page['available']
+        if name == 'search' and arg and available['has_search_bar']:
+            return f'search[{arg}]'
+        if name == 'click' and arg.lower() != 'search' and arg.lower() in {
+                str(label).lower() for label in available['clickables']}:
+            return f'click[{arg.lower()}]'
+        return 0
+
     def step(self, action):
-        if action_family(action):
+        action = self.resolve(action)
+        if action:
             self.history.append(action)
             self.page = self._fetch(self.history)
         self.raw_score = float(self.page['score'])

@@ -6,17 +6,30 @@ import random
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
+def full_catalog_identity(env):
+    products = env.server.all_products
+    indexed = int(env.server.search_engine.num_docs)
+    if len(products) <= 100_000 or indexed != len(products):
+        raise ValueError(f'Expected full matched catalog/index; products={len(products)}, indexed={indexed}. '
+                         'Select both full paths before building the upstream index.')
+    digest = hashlib.sha256()
+    for product in products:
+        digest.update((product['asin']+'\\n').encode())
+    return {'products': len(products), 'indexed': indexed, 'product_ids_sha256': digest.hexdigest()}
+
+
 class Simulator:
-    def __init__(self, env):
+    def __init__(self, env, catalog_info=None):
+        self.catalog_info = catalog_info or {}
         self.env = env
         goals = env.server.goals
         # Include order, attributes and goal descriptions. Only the digest leaves the process.
-        identity = json.dumps(goals, sort_keys=True, ensure_ascii=False, default=lambda x: x.tolist() if hasattr(x, "tolist") else sorted(x)).encode()
+        identity = json.dumps([self.catalog_info,goals], sort_keys=True, ensure_ascii=False, default=lambda x: x.tolist() if hasattr(x, "tolist") else sorted(x)).encode()
         self.catalog = hashlib.sha256(identity).hexdigest()
         self.count = len(goals)
 
     def health(self):
-        return {'catalog': self.catalog, 'n_goals': self.count}
+        return {'catalog': self.catalog, 'n_goals': self.count, **self.catalog_info}
 
     def replay(self, goal, actions):
         if type(goal) != int or not 0 <= goal < self.count:
@@ -90,7 +103,7 @@ def main():
     np.random.seed(42)
     kwargs = {'file_path': args.products} if args.products else {}
     env = WebAgentTextEnv(observation_mode='text', human_goals=True, **kwargs)
-    sim = Simulator(env)
+    sim = Simulator(env, full_catalog_identity(env))
     print(json.dumps(sim.health()), flush=True)
     HTTPServer(('127.0.0.1', args.port), handler_for(sim)).serve_forever()
 

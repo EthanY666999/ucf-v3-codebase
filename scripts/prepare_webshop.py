@@ -18,7 +18,7 @@ def prepare(health, output):
     data = {split: [{'uid': f'webshop_{i}', 'environment': 'webshop', 'goal_id': i, 'split': split}
                     for i in ids] for split, ids in boundaries.items()}
     raw = json.dumps(data, separators=(',', ':')).encode()
-    manifest = {'catalog': catalog, 'n_goals': n, 'dataset_sha256': hashlib.sha256(raw).hexdigest(),
+    manifest = {**health, 'catalog': catalog, 'n_goals': n, 'dataset_sha256': hashlib.sha256(raw).hexdigest(),
                 'sizes': {k: len(v) for k, v in data.items()}}
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
