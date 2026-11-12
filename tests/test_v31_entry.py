@@ -133,6 +133,8 @@ def test_smoke_from_alias_through_collector_and_objective(
     run.main()
     out = tmp_path/'smoke'/f'2b_sokoban_{alias}_seed42'
     assert json.loads((out/'status.json').read_text())['status'] == 'smoke_complete'
+    progress = json.loads((out/'progress.json').read_text())
+    assert (progress['phase'], progress['active'], progress['step']) == ('smoke_complete', 0, 1)
     record = json.loads((out/'train_metrics.jsonl').read_text())
     assert record['ucf_version'] == 'v3.1'
     assert sum(record['ucf_preupdate_fullbatch_components'].values()) == record['mock_weighted_rows']

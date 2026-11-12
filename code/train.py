@@ -297,6 +297,13 @@ def configure_ucf(cfg, out):
     cfg['ucf_log_dir'] = str(out / 'ucf_logs')
 
 
+def finish_run(out, **status):
+    """Close the sampler heartbeat before advertising that the run has ended."""
+    atomic_json(out / 'progress.json', dict(phase=status['status'], active=0,
+                method=status['method'], step=status['step'], updated_unix=time.time()))
+    atomic_json(out / 'status.json', status)
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--method',required=True,choices=['grpo','ucf','gigpo','starpo_s'])
@@ -351,7 +358,7 @@ def main():
     if args.eval_only:
         evaluate(engine,tokenizer,cfg,data['validation'],out/'validation_0000.json',100042,'validation')
         evaluate(engine,tokenizer,cfg,data['test'],out/'final_test.json',200042,'test')
-        atomic_json(out/'status.json',dict(status='evaluation_complete',method=args.method))
+        finish_run(out, status='evaluation_complete', step=0, method=args.method)
         return
     # Record the original model's scores on the map set selected at launch.
     fresh_flh = cfg.get('environment') == 'flh' and not (args.resume or args.smoke)
@@ -368,7 +375,7 @@ def main():
             atomic_json(out/'flh_calibration.json', assessment)
             print(json.dumps({'flh_calibration': assessment}), flush=True)
         if args.validate_base:
-            atomic_json(out/'status.json', dict(status='base_validation_complete', step=0, method=args.method))
+            finish_run(out, status='base_validation_complete', step=0, method=args.method)
             return
     optimizer_name=cfg.get('optimizer','adamw')
     if optimizer_name=='adamw8bit':
@@ -408,10 +415,10 @@ def main():
     # pending checkpoint validation above, but never perform another update or
     # enter final-test evaluation merely because the supervisor restarted it.
     if args.resume and args.stop_after_step is not None and args.stop_after_step <= start_step < cfg['steps']:
-        atomic_json(out/'status.json',dict(status='paused_checkpointed',step=start_step,
+        finish_run(out, status='paused_checkpointed', step=start_step,
                     total_steps=cfg['steps'],method=args.method,
                     final_evaluation_pending=start_step==cfg['steps'],
-                    stop_after_step=args.stop_after_step,reason='requested_stop_boundary'))
+                    stop_after_step=args.stop_after_step,reason='requested_stop_boundary')
         return
     start=time.monotonic()
     step=start_step
@@ -470,14 +477,15 @@ def main():
     # the run window before starting that separate, full 100 x 4 evaluation.
     if step<cfg['steps'] or STOP:
         save_checkpoint(cp,actor,optimizer,step,rng,cfg,previous_elapsed+time.monotonic()-start)
-        atomic_json(out/'status.json',dict(status='paused_checkpointed',step=step,total_steps=cfg['steps'],method=args.method,
-                    final_evaluation_pending=step==cfg['steps']))
+        finish_run(out, status='paused_checkpointed', step=step, total_steps=cfg['steps'], method=args.method,
+                    final_evaluation_pending=step==cfg['steps'])
         return
     tests=data['validation'][4:8] if args.smoke else data['test']
     final=evaluate(engine,tokenizer,cfg,tests,out/'final_test.json',200042,'smoke_validation' if args.smoke else 'test')
     actor.save_pretrained(out/'final_model',safe_serialization=True)
     tokenizer.save_pretrained(out/'final_model')
-    atomic_json(out/'status.json',dict(status='smoke_complete' if args.smoke else 'complete',step=step,total_steps=cfg['steps'],method=args.method,final=final))
+    finish_run(out, status='smoke_complete' if args.smoke else 'complete', step=step,
+               total_steps=cfg['steps'], method=args.method, final=final)
     print(json.dumps({'FINAL':final}),flush=True)
 
 
