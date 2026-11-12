@@ -5,9 +5,9 @@
 | 模型 | 环境参数 | 每局回合 | 整条轨迹的回复 token 上限 | 证据 |
 | --- | --- | ---: | ---: | --- |
 | 2B | `sokoban` | 10 | 10,240 | 有原项目同起点 UCF / GRPO 配对训练记录 |
-| 2B | `frozenlake` | 10 | 4,096 | 原版地图与 V3 计划配置已归档，本仓库覆盖 CPU 环境验收 |
+| 2B | `flh` | 20 | 20,480 | 难版 FrozenLake，与 4B 共用冻结地图，第 0 步实测待跑 |
 | 4B | `sokoban` | 10 | 10,240 | 同协议移植 |
-| 4B | `flh` | 20 | 10,240 | 难版 FrozenLake，冻结 9–12 边长、最短解 7–16 步的地图 |
+| 4B | `flh` | 20 | 20,480 | 难版 FrozenLake，地图边长 9–12，最短解 7–16 步，第 0 步实测待跑 |
 | 4B | `webshop` | 15 | 10,240 | 官方文本模拟器适配，自由搜索词和可见按钮；需要单独准备商品目录 |
 
 4B 三组均需在合作者机器上做首轮 GPU 冒烟。仓库附网格任务、地图校验和及两款官方 tokenizer 的固定版本。模型权重和 WebShop 商品索引由运行方提供。[安装与硬件](docs/INSTALL.md) · [WebShop 搭建与验收](docs/WEBSHOP.md) · [已完成的 CPU 验收](docs/ACCEPTANCE.md)
@@ -21,6 +21,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-cpu.txt
 python -m pytest -q
+python run.py --size 2b --env flh --method grpo4 --model-dir metadata/Qwen3.5-2B --check
 python run.py --size 4b --env sokoban --method ucf --model-dir metadata/Qwen3.5-4B --check
 ```
 
@@ -39,7 +40,9 @@ python run.py --size 4b --env sokoban --method grpo4 --resume --until 50
 
 ## 合作者运行顺序
 
-每个环境先跑 `grpo4`，再跑 `ucf` 和 `gigpo`，三者分别从同一个原始模型起步。4B 依次做 Sokoban、难版 FrozenLake 和 WebShop。2B 做 Sokoban 和原版 FrozenLake。先看 seed42 的 25、50 步固定验证，再用 seed43 重复需要报告的配对。`grpo8` 检验把额外采样预算用于独立轨迹的效果。另附 StarPO-S 的组过滤组件对照和两项可执行机制消融。[基线、消融与交回结果](docs/EXPERIMENTS.md)
+每个环境先跑 `grpo4`，再跑 `ucf` 和 `gigpo`，三者分别从同一个原始模型起步。2B 做 Sokoban 和难版 FrozenLake。4B 依次做 Sokoban、难版 FrozenLake 和 WebShop。先看 seed42 的 25、50 步固定验证，再用 seed43 重复需要报告的配对。`grpo8` 衡量额外算力用于独立轨迹时的收益。[基线、消融与交回结果](docs/EXPERIMENTS.md)
+
+难版 FrozenLake 在正式训练前对 2B、4B 各做一次第 0 步验证，每个模型在固定 100 题上各采 4 条轨迹。单条成功率在 5%–20%、pass@4 在 20%–50% 时采用难版。任一指标低于下限就切到中等难度重测。每个规模的所有方法共用选定地图和 20,480 token 的整轨迹预算。[第 0 步命令与分档规则](docs/EXPERIMENTS.md#frozenlake-第-0-步验证)
 
 ## 当前能引用的结果
 

@@ -1,0 +1,11 @@
+{
+  "environment": "flh",
+  "max_turns": 20,
+  "repeat_limit": 21,
+  "max_response_tokens": 20480,
+  "actor_device": "cuda:0",
+  "dataset_path": "data/flh/data.json",
+  "dataset_sha256": "00ab9e70bef8acb57751facb6da6c9bd29e9b5bd3d5492e6f4b293d1034961d5",
+  "frozen_maps_path": "data/flh/maps.json",
+  "frozen_maps_sha256": "9574a11237ce4d3433911319baa54755ca70c9abf0aa25f4cce7e80ad984b4df"
+}

@@ -36,40 +36,12 @@ def append_json(path, value):
         f.flush()
 
 
-def make_datasets(cfg=None):
-    """Replicate upstream generation order and seed, without its DatasetRegistry dependency."""
-    if cfg and cfg.get("dataset_path"):
-        path=Path(cfg["dataset_path"])
-        raw=path.read_bytes()
-        assert hashlib.sha256(raw).hexdigest()==cfg["dataset_sha256"], "Dataset changed"
-        return json.loads(raw)
-    dest = ROOT / "artifacts/data.json"
-    if dest.exists():
-        return json.loads(dest.read_text())
-    rng = np.random.RandomState(42)
-    nt, ne = 10000, 100
-    ts, es = rng.randint(0, 100000, nt), rng.randint(0, 100000, ne)
-    tz, ez = rng.randint(2, 10, nt), rng.randint(2, 10, ne)
-    tp, ep = rng.uniform(.6, .85, nt), rng.uniform(.6, .85, ne)
-    def rows(seeds, sizes, ps, split):
-        return [dict(seed=int(s), size=int(z), p=float(p), uid=f"{s}_{z}_{p}", split=split)
-                for s, z, p in zip(seeds, sizes, ps)]
-    data = dict(train=rows(ts, tz, tp, "train"), test=rows(es, ez, ep, "test"))
-    # Validation is generated separately; the fixed test split is never used for selection.
-    vr = np.random.RandomState(20261013)
-    data["validation"] = rows(vr.randint(100000, 200000, 100), vr.randint(2, 10, 100),
-                              vr.uniform(.6, .85, 100), "validation")
-    assert not ({x['uid'] for x in data['train']} & {x['uid'] for x in data['test']})
-    atomic_json(dest, data)
-    atomic_json(ROOT / "artifacts/data_manifest.json", {
-        "sha256": hashlib.sha256(dest.read_bytes()).hexdigest(),
-        "sizes": {k:len(v) for k,v in data.items()}, "seed":42,
-        "source": "rLLM 7b47687f6a9ef1bf5cbd56dd1af61fff08c4b0e4",
-        "p_means": "probability of a frozen tile, NOT slip probability",
-        "author_split_verified": False,
-        "note": "Task UIDs disjoint; small maps can still have duplicate geometry. See map_audit.json."
-    })
-    return data
+def make_datasets(cfg):
+    """Load the frozen task splits selected by the experiment configuration."""
+    raw = Path(cfg["dataset_path"]).read_bytes()
+    if hashlib.sha256(raw).hexdigest() != cfg["dataset_sha256"]:
+        raise ValueError("Dataset changed")
+    return json.loads(raw)
 
 
 _FROZEN_MAP_CACHE={}
@@ -98,10 +70,7 @@ def make_env(task, cfg):
         assert map_hash(rows)==task['map_sha256'], 'Frozen FLH map content mismatch'
         e=FrozenLakeEnv(desc=rows,seed=task["seed"],is_slippery=False,max_steps=cfg["max_turns"])
         e.reset();return e
-    e = FrozenLakeEnv(size=task["size"], p=task["p"], seed=task["seed"],
-                      is_slippery=cfg["is_slippery"], max_steps=cfg["max_turns"])
-    e.reset()
-    return e
+    raise ValueError(f"Unknown task environment: {task.get('environment')!r}")
 
 
 def distance(env):

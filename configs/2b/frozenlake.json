@@ -1,9 +1,0 @@
-{
-  "environment": "frozenlake",
-  "max_turns": 10,
-  "repeat_limit": 11,
-  "max_response_tokens": 4096,
-  "actor_device": "cuda:0",
-  "dataset_path": "data/frozenlake/data.json",
-  "dataset_sha256": "5f15b04e47338132d9de8ba732ccc66c97c7142cc6200161cfd03e0eb18bfdf9"
-}

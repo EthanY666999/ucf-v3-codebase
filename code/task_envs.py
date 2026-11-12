@@ -1,4 +1,4 @@
-"""Deterministic task adapters. FrozenLake retains the vendored generator unchanged."""
+"""Deterministic Sokoban and FrozenLake task adapters with frozen map support."""
 import copy
 import hashlib
 from collections import deque
@@ -113,7 +113,7 @@ In every turn, output only the NEXT ACTION in the fence, one of Up, Down, Left, 
             self.messages[-1]['content']=self.messages[-1]['content'].replace('P has not reached G yet','the box has not reached G yet')
     return Agent(max_steps=max_steps)
 
-def generate_flh_map(size,p,seed):
+def generate_flh_map(size,p,seed, *, min_steps=7, max_steps=16):
     """Original draw order/random endpoints; acceptance replaced with exact BFS.
 
     Never calls or changes vendored is_valid/MAX_STEPS. Each (size,p,seed) replays
@@ -131,4 +131,4 @@ def generate_flh_map(size,p,seed):
         rows=[''.join(row) for row in board]
         try:meta=lake_metadata(SimpleNamespace(desc=np.asarray(board,dtype='S1')))
         except ValueError:continue
-        if 7<=meta['shortest_path_length']<=16:return rows,meta
+        if min_steps<=meta['shortest_path_length']<=max_steps:return rows,meta

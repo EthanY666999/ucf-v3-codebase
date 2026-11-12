@@ -251,6 +251,22 @@ def evaluate(engine,tokenizer,cfg,tasks,out_path,seed,split):
     return metrics
 
 
+def flh_base_assessment(metrics, difficulty):
+    success = metrics['success_rate_pct']
+    pass4 = metrics['pass_at_4_pct']
+    if not (0 <= success <= 100 and 0 <= pass4 <= 100):
+        raise ValueError('Invalid step-0 validation percentages')
+    if success < 5 or pass4 < 20:
+        outcome = 'below_target'
+    elif success > 20 or pass4 > 50:
+        outcome = 'above_target'
+    else:
+        outcome = 'in_target'
+    return dict(difficulty=difficulty, outcome=outcome, success_rate_pct=success, pass_at_4_pct=pass4,
+                target_success_rate_pct=[5, 20], target_pass_at_4_pct=[20, 50],
+                next_difficulty='medium' if outcome == 'below_target' else difficulty)
+
+
 def write_rollouts(path,branches,tasks,mode='wt',attempt=None):
     with gzip.open(path,mode) as f:
         for b in branches:
@@ -268,9 +284,13 @@ def main():
     parser.add_argument('--stop-after-step',type=int)
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--eval-only',action='store_true')
+    parser.add_argument('--validate-base',action='store_true')
     parser.add_argument('--fork_point',choices=['first_fence'],default=None)
     args=parser.parse_args()
     cfg=json.loads((ROOT/args.config).read_text())
+    if args.validate_base and (args.smoke or args.resume or args.eval_only or
+                               args.stop_after_step is not None or cfg.get('anchor16')):
+        parser.error('--validate-base requires fresh weights and exits at step 0')
     if args.fork_point is not None:
         assert args.method=='ucf'
         cfg['fork_point']=args.fork_point
@@ -335,6 +355,26 @@ def main():
         evaluate(engine,tokenizer,cfg,data['test'],out/'final_test.json',200042,'test')
         atomic_json(out/'status.json',dict(status='evaluation_complete',method=args.method))
         return
+    # Calibrate FLH from the untouched model on validation before any optimizer update.
+    fresh_flh = cfg.get('environment') == 'flh' and not (args.resume or args.smoke or cfg.get('anchor16'))
+    if args.validate_base or fresh_flh:
+        os.environ['PATR_PROGRESS_PATH'] = str(out/'progress.json')
+        base = evaluate(engine, tokenizer, cfg, data['validation'], out/'validation_0000.json', 100042, 'validation')
+        print(json.dumps({'initial_validation': base}), flush=True)
+        switch_to_medium = False
+        if fresh_flh:
+            difficulty = cfg.get('flh_difficulty', 'hard')
+            assessment = flh_base_assessment(base, difficulty)
+            assessment.update(n_tasks=base['n_tasks'], n_trajectories=base['n_trajectories'],
+                              max_response_tokens=cfg['max_response_tokens'],
+                              dataset_sha256=cfg['dataset_sha256'], maps_sha256=cfg['frozen_maps_sha256'])
+            atomic_json(out/'flh_calibration.json', assessment)
+            print(json.dumps({'flh_calibration': assessment}), flush=True)
+            switch_to_medium = assessment['next_difficulty'] != difficulty
+        if args.validate_base or switch_to_medium:
+            status = 'evaluate_medium' if switch_to_medium else 'base_validation_complete'
+            atomic_json(out/'status.json', dict(status=status, step=0, method=args.method))
+            return
     optimizer_name=cfg.get('optimizer','adamw')
     if optimizer_name=='adamw8bit':
         import bitsandbytes as bnb
@@ -376,7 +416,7 @@ def main():
     validation=data['validation'][:4] if args.smoke else data['validation']
     if importing_anchor:
         evaluate(engine,tokenizer,cfg,validation,out/'validation_0016.json',100042,'validation')
-    if start_step==0:
+    if start_step==0 and not fresh_flh:
         base=evaluate(engine,tokenizer,cfg,validation,out/'validation_0000.json',100042,'validation')
         print(json.dumps({'initial_validation':base}),flush=True)
     elif args.resume:

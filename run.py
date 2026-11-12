@@ -32,6 +32,17 @@ def resolve(args, preview=False):
     model = read(CONFIGS/'models.json')[args.size]
     cfg.update(model=str(args.model_dir.resolve()) if args.model_dir else model['hf_id'], model_revision=model['revision'],
                seed=args.seed, run_label=f'{args.size}_{args.env}_{args.method}_seed{args.seed}')
+    if args.flh_difficulty and args.env != 'flh':
+        raise ValueError('--flh-difficulty applies only to --env flh')
+    if args.env == 'flh':
+        cfg['flh_difficulty'] = args.flh_difficulty or 'hard'
+        if cfg['flh_difficulty'] == 'medium':
+            hashes = read(ROOT/'data/SHA256.json')
+            dataset = 'data/flh/medium/data.json'
+            maps = 'data/flh/medium/maps.json'
+            cfg.update(dataset_path=dataset, dataset_sha256=hashes[dataset],
+                       frozen_maps_path=maps, frozen_maps_sha256=hashes[maps],
+                       run_label=f'{args.size}_flh_medium_{args.method}_seed{args.seed}')
     if args.token_budget is not None:
         if not 0 < args.token_budget < cfg['max_context_tokens']:
             raise ValueError('Whole-trajectory token budget must be positive and smaller than the context window')
@@ -95,7 +106,8 @@ def check_weights(model_dir):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--size', choices=['2b','4b'], required=True)
-    p.add_argument('--env', choices=['sokoban','frozenlake','flh','webshop'], required=True)
+    p.add_argument('--env', choices=['sokoban','flh','webshop'], required=True)
+    p.add_argument('--flh-difficulty', choices=['hard','medium'], help='FrozenLake map set (default: hard)')
     p.add_argument('--method', choices=read(CONFIGS/'methods.json'), required=True)
     p.add_argument('--model-dir', type=Path, default=os.environ.get('MODEL_DIR'))
     p.add_argument('--anchor16', type=Path, help='Optional original shared step-16 checkpoint; default is a fresh base')
@@ -115,7 +127,11 @@ def main():
     group.add_argument('--print-config', action='store_true')
     group.add_argument('--check', action='store_true', help='Check data and tokenizer metadata on CPU')
     group.add_argument('--smoke', action='store_true', help='One real GPU update and validation')
+    group.add_argument('--validate-base', action='store_true',
+                       help='Evaluate the original model on the fixed validation split and exit at step 0')
     args = p.parse_args()
+    if args.validate_base and (args.resume or args.anchor16 or args.until is not None):
+        p.error('--validate-base evaluates fresh weights without a training step or checkpoint')
     cfg = resolve(args, preview=args.print_config)
     if args.print_config:
         print(json.dumps(cfg, indent=2))
@@ -139,7 +155,8 @@ def main():
     index = int(cfg['actor_device'].split(':')[-1])
     if not torch.cuda.is_available() or torch.cuda.device_count() <= index:
         raise ValueError(f"Selected layout requires at least {index+1} visible CUDA devices")
-    out = args.output_root.resolve()/('smoke' if args.smoke else 'train')/cfg['run_label']
+    phase = 'base-validation' if args.validate_base else ('smoke' if args.smoke else 'train')
+    out = args.output_root.resolve()/phase/cfg['run_label']
     out.mkdir(parents=True, exist_ok=True)
     with (out/'.run.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -157,6 +174,7 @@ def main():
                    '--method', cfg['method'], '--output-dir', str(out)]
         if args.resume: command.append('--resume')
         if args.smoke: command.append('--smoke')
+        if args.validate_base: command.append('--validate-base')
         if args.until: command.extend(['--stop-after-step', str(args.until)])
         env = dict(os.environ, VLLM_BATCH_INVARIANT='1')
         # exec preserves scheduler signals and keeps the run lock open in the trainer.
