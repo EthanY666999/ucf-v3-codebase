@@ -1,0 +1,3 @@
+data/** -text
+metadata/** -text
+metadata/*/LICENSE whitespace=cr-at-eol

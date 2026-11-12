@@ -1,0 +1,35 @@
+{
+  "ucf": {
+    "method": "ucf"
+  },
+  "grpo4": {
+    "method": "grpo",
+    "flat_group_size": 4
+  },
+  "gigpo": {
+    "method": "gigpo",
+    "flat_group_size": 4,
+    "gigpo_gamma": 0.95,
+    "gigpo_omega": 1.0
+  },
+  "grpo8": {
+    "method": "grpo",
+    "flat_group_size": 8
+  },
+  "no-part-b": {
+    "method": "ucf",
+    "ucf_beta": 0.0
+  },
+  "token-partition": {
+    "method": "ucf",
+    "ucf_partition": "action_tokens"
+  },
+  "starpo-s": {
+    "method": "starpo_s",
+    "flat_group_size": 4,
+    "starpo_keep_fraction": 0.5,
+    "clip_low": 0.2,
+    "clip_high": 0.28,
+    "kl_coefficient": 0.0
+  }
+}

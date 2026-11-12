@@ -1,0 +1,11 @@
+{
+  "environment": "sokoban",
+  "max_turns": 10,
+  "repeat_limit": 11,
+  "max_response_tokens": 10240,
+  "actor_device": "cuda:0",
+  "dataset_path": "data/sokoban/data.json",
+  "dataset_sha256": "6584a8b35a19350459193cce7d1a868cd24eb28e407295f78ee4727a71555d87",
+  "frozen_maps_path": "data/sokoban/maps.json",
+  "frozen_maps_sha256": "53932236e5f528da5c6442586b2054561b8a510782f42943268cdf44eb53af27"
+}

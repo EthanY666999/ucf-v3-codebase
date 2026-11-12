@@ -1,0 +1,6 @@
+{
+  "train_start": 1500,
+  "validation": [500, 600],
+  "test": [0, 500],
+  "indexing": "zero-based, end-exclusive, upstream human goals in seed-233 order"
+}

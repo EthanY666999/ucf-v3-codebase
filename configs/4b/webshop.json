@@ -1,0 +1,11 @@
+{
+  "environment": "webshop",
+  "max_turns": 15,
+  "repeat_limit": 16,
+  "max_response_tokens": 10240,
+  "actor_device": "cuda:1",
+  "vllm_memory_fraction": 0.45,
+  "vllm_max_sequences": 16,
+  "micro_batch_size": 1,
+  "micro_batch_token_limit": 12000
+}
