@@ -1,20 +1,43 @@
-# 基线、消融与交付
+# UCF V3.1 实验
 
-同一模型与环境的主对照共享原始权重、题目流、seed、整轨迹 token 上限、最大回合数、优化器、验证题和温度。UCF V3 在每题四条原始轨迹中寻找带首围栏的节点，用其他题的候选数量校准均匀选点概率，每题目标约两处分叉。原动作和反事实按后果分层，从原始采样位置的完整词表分布计算层概率，按完整补集采样；选中节点以实际 `1/ρ` 加权。Part B 使用同题其他三条的平均回报做基线，β=0.25，mask 从分叉 token 到该回合末尾。训练与评估在第一个完整动作块处按采样 token 边界截断。[运行实现](../code/ucf/ucf_v3.py) · [完整词表补集](../code/ucf/v3_sampling.py)
+同一规模和环境的各臂共享原始权重、按步派生的抽题流、提示、回合与 token 上限、固定验证题和评估温度。每个方法独立训练。`run.py --print-config` 输出合并后的配置。
 
-| `--method` | 做什么 | 用来回答什么 |
-| --- | --- | --- |
-| `grpo4` | 每题四条独立原始轨迹 | 同组大小的主基线 |
-| `ucf` | GRPO4 加均匀选点与反事实 Part B | 分叉收益能否抵消其额外采样成本 |
-| `gigpo` | 同框架 GiGPO，四条轨迹。轨迹优势加相同题和状态下的步级相对优势，γ=0.95，ω=1 | 对照另一种步级信用分配 |
-| `starpo-s` | StarPO-S 组件对照：按组回报标准差保留最高 50%，KL 系数 0，clip 为 0.2/0.28 | 检验组过滤与稳定化设置；本地实现只覆盖列出的组件 |
-| `grpo8` | 每题八条原始轨迹，验证仍采四次 | 用额外算力多采独立轨迹的收益。tokens 和小时需实测 |
-| `no-part-b` | 执行和记录 UCF 分叉，β=0，更新只用原始行 | 隔离 Part B 的更新作用，保留分叉采样成本 |
-| `token-partition` | 网格保留位置、HT 和 β，只把动作词映射成四个方向加剩余词类，不再合并同后果的动作 | 额外一步环境信息是否有价值。WebShop 默认已使用动作族分层 |
+| 方法 | 采集与训练目标 |
+| --- | --- |
+| `ucf` | 整回合重掷，默认 unbiased，M=2，逆回合先验，每题目标 3 个节点，β=0.25 |
+| `ucf-merge` | 相同采集，原始轨迹和每个实际叶子共同组成相对优势组 |
+| `ucf-success` | 与 merge 使用同一组统计量，再删掉负优势叶子 |
+| `ucf-m1` | 默认目标，每个选中节点只重掷一次 |
+| `ucf-uniform` | 默认目标，各回合候选权重相等 |
+| `no-part-b` | 执行完整 V3.1 采集，β=0，只更新 Part A |
+| `grpo4` | 每题 4 条独立轨迹的 GRPO |
+| `grpo8` | 每题 8 条独立训练轨迹，验证仍为 4 条 |
+| `gigpo` | 每题 4 条，轨迹优势加相同状态的步级优势，γ=0.95、ω=1 |
+| `starpo-s` | 按组回报标准差保留前 50%，KL 系数 0，clip 为 0.2/0.28 |
 
-“均匀”指同题合格候选有相同的 ρ。完整 V3 移除了手工过程分 S；网格上仍有环境知识，例如 Sokoban 的角落死局标签、FrozenLake 的洞和终点。`token-partition` 就是检验这部分贡献的一组。WebShop 的 `SEARCH / CLICK / RESIDUAL` 属于首 token 类别，解析与首 token 不一致的比例会记录，不能将该分层解读为精确预测下一页。
+可以用 `--ucf-resamples M` 覆盖 UCF 方法的重掷数。为同一方法、seed 运行不同 M 时使用各自的 `--output-root`。
 
-先在同一台机器上比较各臂相同步数，然后按累计生成 token 和训练小时补充比较。GiGPO 官方 WebShop 配置使用不同模型和 group=8，本文的同框架 group=4 是匹配对照；单列官方发表值时请标明模型、奖励、划分、动作上限和评估采样。WebShop 同时报告成功率和官方平均 score。[官方 GiGPO WebShop 配置](https://github.com/langfengQ/verl-agent/blob/20bd331bdbc9026a5668e11362178e10ab7400c8/examples/gigpo_trainer/run_webshop.sh) · [RAGEN / StarPO-S](https://github.com/mll-lab-nu/RAGEN) · [GiGPO 论文](https://proceedings.neurips.cc/paper_files/paper/2025/hash/420c9f777c0b4f78d515e53cf74d58b2-Abstract-Conference.html)
+## 从哪个回合分叉
+
+每题独立生成 4 条轨迹。每条轨迹每个实际采样回合均有一个候选，边界是生成该回合第一个 token 之前的位置。回合从 1 起算，默认权重为 `max(1/t, 0.25)`。对题 q，使用同一批的其他题求 c，使这些题的每题平均 `Σ min(1,c·w)` 达到目标分叉数；用该 c 为 q 的每个候选赋予 ρ。其他题的候选全部饱和仍不足时，q 取 ρ=1，并记录饱和标记。先落盘全部 w、ρ，再抽签并落盘，之后开始重掷。
+
+选中节点从原始 token 前缀独立重掷 M 次，采用原采样参数及剩余预算，lineage 为 `{j}@{t}.rs{m}`。原回合与重掷均在首个完整合法动作块处按 token 边界裁切并执行。解析失败或预算耗尽且未执行动作归入“无动作”；已执行的动作按执行后观测比较。若有 d 次重掷改变后果，从这 d 次中均匀选一次，继续到终止得到叶子。已终局的重掷直接给出回报，续写成本为零。
+
+接入环境只需提供三样能力：恢复到回合起点、执行动作、用 `same_outcome` 比较后果。网格比较棋盘状态，WebShop 比较页面文字及已选规格。[采集实现](../code/ucf/ucf_v31.py) · [环境适配](../code/task_envs.py) · [WebShop 桥接](WEBSHOP.md)
+
+## 三种训练目标
+
+三种估计方式共用采集，采用三种训练目标。
+
+- **unbiased。** Part A 沿用 GRPO4。对每个选中节点，b 为同题另外 3 条原始轨迹的平均回报。原行系数是 (M−d)/M，叶子行系数是 d/M，优势分别是 2(R_o−b) 和 2(R_cf−b)。两行均仅训练第 t 回合生成的 token，每个 token 的权重是 β × 系数 / (ρ × 题数 × 4 × L)。L 取该行所在整条轨迹的生成 token 数，先保存再裁 mask。零优势或零系数的 Part B 行整行移除，PG 和 KL 都不计。无偏性适用于**同前缀、同策略、同终止规则下，逐轨迹长度归一的 Part B 项**。
+- **merge。** 4 条原始轨迹和全部实际叶子共同计算每题均值与样本标准差（ddof=1），沿用 GRPO 的数值稳定项。按完整组大小和各自整轨迹生成长度归一，不乘 1/ρ。原始轨迹训练所有生成 token；叶子训练第 t 回合及之后的生成 token，共享前缀权重为零。
+- **success。** 先与 merge 完全相同地计算组统计和权重，再删除负优势的叶子行。删除后沿用原组分母，其 PG 和 KL 均不进入损失。比较 `ucf-merge` 与 `ucf-success` 可以直接回答“删掉负优势叶子的影响”。[权重实现](../code/ucf/ucf_weights.py)
+
+## 如何读结果
+
+运行目录为 `RUN_ROOT/train/<规模>_<环境>_<方法>_seed<seed>/`。训练曲线和成本在 `train_metrics.jsonl`，抽签前、抽签后及叶子记录在 `ucf_logs/`，逐节点结果在 `branch_events.jsonl`。在同一步内，按题目 UID、原始轨迹 j 和回合 turn 将选中行与结果联结。未抽中行记录零生成成本，改变后果次数、反事实回报和终止原因留空。原始 4 条全对、全错、混合按题计数。重掷改变率的分母是全部重掷；至少一次改变的节点比例以选中节点为分母；回报翻转率和叶子截断率以实际叶子为分母。分母为零的比率留空。生成成本计入采样器生成、随后被响应协议裁掉的尾部 token；权重公式中的 L 只计入整条轨迹保留的生成 token。
+
+固定验证每 25 步进行一次。逐轨迹成功率以每题 4 条为分母，pass@4 按题统计至少一次成功，WebShop 另报官方平均 score。完整 400 步后评估最终测试集。用 `python collect_results.py --run-root "$RUN_ROOT"` 读取轻量指标；训练小时是各步采集与更新耗时之和，评估 token 单列。跨方法同时比较相同步数、生成 token 和训练小时，同 seed 的验证按题配对。
 
 ## FrozenLake 第 0 步验证
 
@@ -30,22 +53,3 @@ python run.py --size 4b --env flh --method grpo4 --model-dir /mnt/models/Qwen3.5
 默认难档的 BFS 最短解为 7–16 步。需要单独研究中档时，在启动命令加 `--flh-difficulty medium`。它使用最短解 5–9 步的独立冻结地图，并将结果写入带 `flh_medium` 的目录。每次运行的难度由启动参数固定。
 
 如只需测原始模型，可显式加 `--validate-base`。该命令在第 0 步结束，结果单独保存在 `RUN_ROOT/base-validation/`。用 `--until N` 可显式限定训练步数。上面的正式命令会直接完成预设的 400 步。
-
-旧版若在第 0 步写下 `evaluate_medium`，当时还没有参数更新。拉取新版后，给同一难档正式命令指定新的 `--output-root`，即可保留旧记录并从同一原始模型完整开跑。
-
-## 命令
-
-```bash
-python run.py --size 2b --env flh --method gigpo
-python run.py --size 4b --env flh --method no-part-b
-python run.py --size 4b --env sokoban --method token-partition --seed 43
-python run.py --size 4b --env webshop --method ucf
-```
-
-以上命令从环境变量 `MODEL_DIR` 读取对应**同规模**模型。每个方法都独立保存。第 25、50、100 步是看历程的验证点；使用同一批验证题分析差距，保留失败和截断。测试集只在事先选定的最终训练预算评估。四个样本来自同一题，区间按题配对重采样，训练 seed 单列。
-
-## 结果
-
-在 `RUN_ROOT/train/<规模>_<环境>_<方法>_seed<seed>/` 内保留 `launch.json`、`config.json`、`hardware.json`、`numerical_runtime.json`、`train_metrics.jsonl`、`validation_*.json[l]` 和最终测试文件。记录原始四条的全错/混合/全对比例，救回率分母为全部原始全错题，分叉数、候选覆盖、KL、生成 token、训练与验证用时分别汇总。UCF 的 `ucf_logs/budget_*.json` 与 `select_*.jsonl` 可回查具体节点。WebShop 另保存冻结目录的 `manifest.json`。论文表格用 `success_rate_pct`（每条轨迹）与 `pass_at_4_pct`（每题至少一次成功）两个分母。网格还有每条轨迹的步数和是否到达 token 上限。
-
-内网可只交回汇总数字、配置、seed、源码提交、数据 SHA 和评估题数。完整记录留在运行主机。公开仓库默认忽略权重、存档及运行输出。

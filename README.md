@@ -1,49 +1,41 @@
-# UCF V3 · Qwen3.5 智能体强化学习
+# UCF V3.1 Code Base
 
-从原始 Qwen3.5 出发，用相同的任务、提示、回合上限和验证集比较 **UCF V3、GRPO 和 GiGPO**。所有发布配置都跳过任务 SFT。运行入口是 `run.py`，Linux 内网机器可以使用预先准备好的模型目录，训练期间无需访问模型 API。
+本仓库负责从克隆到连续跑完 **Qwen3.5-2B、Sokoban、单卡**的默认队列。每项从相同的原始模型独立开始，无任务 SFT。换环境、换模型尺寸、使用多卡训练时，由使用方调整配置并在目标机器验收。
 
-| 模型 | 环境参数 | 每局回合 | 整条轨迹的回复 token 上限 | 证据 |
-| --- | --- | ---: | ---: | --- |
-| 2B | `sokoban` | 10 | 10,240 | 有原项目同起点 UCF / GRPO 配对训练记录 |
-| 2B | `flh` | 20 | 20,480 | 难版 FrozenLake，与 4B 共用冻结地图，第 0 步实测待跑 |
-| 4B | `sokoban` | 10 | 10,240 | 同协议移植 |
-| 4B | `flh` | 20 | 20,480 | 难版 FrozenLake，地图边长 9–12，最短解 7–16 步，第 0 步实测待跑 |
-| 4B | `webshop` | 15 | 10,240 | 官方文本模拟器适配，自由搜索词和可见按钮；需要单独准备商品目录 |
+## 从克隆到连续队列
 
-4B 三组均需在合作者机器上做首轮 GPU 冒烟。仓库附网格任务、地图校验和及两款官方 tokenizer 的固定版本。模型权重和 WebShop 商品索引由运行方提供。[安装与硬件](docs/INSTALL.md) · [WebShop 搭建与验收](docs/WEBSHOP.md) · [已完成的 CPU 验收](docs/ACCEPTANCE.md)
-
-## 从克隆到第一组实验
+在具备足够显存的 Linux NVIDIA 训练机上准备 Python 3.12、匹配的 CUDA 驱动、官方模型目录和持久数据盘。下例仅需将模型和输出路径换成本机路径。[依赖、固定模型 revision 和硬件容量](docs/INSTALL.md)
 
 ```bash
-git clone https://github.com/EthanY666999/ucf-v3-codebase.git
-cd ucf-v3-codebase
+git clone https://github.com/EthanY666999/ucf-v3.1-codebase.git
+cd ucf-v3.1-codebase
 python3.12 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-cpu.txt
+python -m pip install -r requirements-gpu.txt
 python -m pytest -q
-python run.py --size 2b --env flh --method grpo4 --model-dir metadata/Qwen3.5-2B --check
-python run.py --size 4b --env sokoban --method ucf --model-dir metadata/Qwen3.5-4B --check
+
+export CUDA_VISIBLE_DEVICES=0
+export MODEL_DIR=/mnt/models/Qwen3.5-2B
+export RUN_ROOT=/mnt/experiments/ucf-v3.1
+python run.py --size 2b --env sokoban --method ucf --model-dir "$MODEL_DIR" --check
+python run.py --size 2b --env sokoban --method ucf --model-dir "$MODEL_DIR" --smoke
+python run_queue.py --size 2b --env sokoban --model-dir "$MODEL_DIR" --run-root "$RUN_ROOT"
+python collect_results.py --run-root "$RUN_ROOT"
 ```
 
-在装好 GPU 依赖的训练环境里，把下面两个路径改成自己的。先跑一个真实更新，随后独立启动正式目录。4B 双卡示例把参考模型和 vLLM 放在可见卡 0，训练模型放在可见卡 1。
+`--check` 核对冻结任务和分词器指纹。`--smoke` 在独立的 `smoke/` 目录执行一个真实 GPU 更新和验证。仅在 CPU 上验收时，安装 `requirements-cpu.txt`，运行 pytest，再用 `--model-dir metadata/Qwen3.5-2B --check` 校验随库元数据。
 
-```bash
-export MODEL_DIR=/mnt/models/Qwen3.5-4B
-export RUN_ROOT=/mnt/experiments/ucf-v3
-export CUDA_VISIBLE_DEVICES=0,1
-python run.py --size 4b --env sokoban --method grpo4 --smoke
-python run.py --size 4b --env sokoban --method grpo4
-```
+默认队列依次运行 `ucf → grpo4 → gigpo → ucf-merge → ucf-success → ucf-m1 → ucf-uniform → no-part-b → grpo8`。每项默认 seed 42、400 步。可在 `configs/queue.json` 为每项设置 `seed` 和绝对步数 `until`。重跑同一命令会跳过达标项，从已有存档恢复未完成项。失败重试一次，仍失败则记下原因并继续。进度、最近固定验证与失败记录在 `RUN_ROOT/queue_status.json`，汇总表为 `RUN_ROOT/results.md` 和 `RUN_ROOT/results.csv`。[采集、训练目标与指标](docs/EXPERIMENTS.md)
 
-`--print-config` 输出完整训练参数，无需显卡。`--check` 校验冻结数据和模型元数据。`--smoke` 在独立目录运行 1 次参数更新，用验证题检查前后结果。`--until` 是绝对训练步数。正式任务每 25 步在固定验证集上每题采样 4 次，完整 400 步后评估测试集。原始训练命令、归档配置和从第 16 步复跑的条件见[版本与来源](docs/PROVENANCE.md)。
+## 使用方调整的位置
 
-## 合作者运行顺序
+1. **模型路径。** 用 `--model-dir` 指向包含权重、分词器及聊天模板的官方目录。换尺寸先核对 `configs/models.json` 中对应的 revision。
+2. **环境和预算。** 在 `configs/<size>/<env>.json` 设置数据、地图、回合上限和整轨迹 token 预算。仓库提供 2B Sokoban / FrozenLake 和 4B Sokoban / FrozenLake / WebShop 预设。WebShop 另需准备模拟器、商品索引和冻结任务划分。[WebShop 搭建](docs/WEBSHOP.md)
+3. **设备与多卡。** 在同一配置文件调整 `actor_device`、`micro_batch_size`、`micro_batch_token_limit`、`vllm_max_sequences` 和 `vllm_memory_fraction`。2B 默认将训练、参考模型和推理放在逻辑卡 0；现有 4B 示例将 actor 放在逻辑卡 1。数值内核切换与训练入口在 `runtime/`，模型放置及权重同步在 `code/train.py`。换布局后在目标机测峰值和吞吐。[设备配置](docs/INSTALL.md)
 
-每个环境先跑 `grpo4`，再跑 `ucf` 和 `gigpo`，三者分别从同一个原始模型起步。2B 做 Sokoban 和难版 FrozenLake。4B 依次做 Sokoban、难版 FrozenLake 和 WebShop。先看 seed42 的 25、50 步固定验证，再用 seed43 重复需要报告的配对。`grpo8` 衡量额外算力用于独立轨迹时的收益。[基线、消融与交回结果](docs/EXPERIMENTS.md)
+## 历史结果（V3，见标签 v3-final）
 
-难版 FrozenLake 的正式训练从第 0 步验证开始，2B、4B 各在固定 100 题上每题采样 4 次。成功率 5%–20%、pass@4 20%–50% 是解读起点的参考区间。即使两项都是 0%，训练也在启动时选定的地图上跑完默认 400 步，每 25 步保存验证结果，最后在测试集上评估。每条轨迹的预算是 20,480 个回复 token。中档可用 `--flh-difficulty medium` 单独启动。[正式训练命令与第 0 步记录](docs/EXPERIMENTS.md#frozenlake-第-0-步验证)
-
-## 当前能引用的结果
+无 SFT 时，在动作 token 处换成其他后果的概率中位数只有 **0.0003**。因此 V3.1 将分叉前移到回合起点，重新采样推理和动作。历史存档和实现请使用 [v3-final](https://github.com/EthanY666999/ucf-v3.1-codebase/tree/v3-final)。
 
 2B Sokoban 的 seed42 配对从同一份 **第 16 步 UCF 强化学习存档**分出，包含模型、AdamW 和随机数状态。该存档此前用 4,096 token 预算训练，两臂从第 17 步起使用 10,240。这组结果不能代替从零步独立启动的对照。
 

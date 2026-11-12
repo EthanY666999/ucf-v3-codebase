@@ -1,4 +1,4 @@
-"""Compose a complete, relocatable UCF V3 experiment and launch it locally."""
+"""Compose a complete, relocatable UCF V3.1 experiment and launch it locally."""
 import argparse
 import fcntl
 import hashlib
@@ -9,7 +9,8 @@ from importlib.metadata import version
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-ANCHOR_SHA = 'a4a4ccaae75a3f9056d17b924d4184facaed7b4ae677709ddb04a0daf1338c0b'
+sys.path.insert(0, str(ROOT / 'code'))
+from scripts.release_config import check_release
 CONFIGS = ROOT / 'configs'
 
 
@@ -27,8 +28,11 @@ def resolve(args, preview=False):
     if not path.is_file():
         raise ValueError(f'No {args.size}/{args.env} experiment in this release')
     cfg = {**read(CONFIGS/'common.json'), **read(path), **read(CONFIGS/'methods.json')[args.method]}
-    if args.method == 'token-partition' and args.env == 'webshop':
-        raise ValueError('WebShop already uses an action-family partition; this ablation is grid-only')
+    if args.ucf_resamples is not None:
+        if cfg['method'] != 'ucf':
+            raise ValueError('--ucf-resamples applies only to UCF methods')
+        cfg['ucf_resamples'] = args.ucf_resamples
+    check_release(cfg, cfg['method'])
     model = read(CONFIGS/'models.json')[args.size]
     cfg.update(model=str(args.model_dir.resolve()) if args.model_dir else model['hf_id'], model_revision=model['revision'],
                seed=args.seed, run_label=f'{args.size}_{args.env}_{args.method}_seed{args.seed}')
@@ -70,12 +74,6 @@ def resolve(args, preview=False):
         for key in ('dataset_path', 'frozen_maps_path'):
             if key in cfg:
                 cfg[key] = str(ROOT / cfg[key])
-    if args.anchor16:
-        if (args.size, args.env, args.method, args.seed, cfg['max_response_tokens']) not in [
-            ('2b', 'sokoban', method, 42, 10240) for method in ('grpo4', 'ucf')]:
-            raise ValueError('The historical anchor belongs to the 2B Sokoban seed42 matched pair')
-        cfg['anchor16'] = str(args.anchor16.resolve())
-        cfg['anchor16_sha256'] = ANCHOR_SHA
     return cfg
 
 
@@ -110,7 +108,8 @@ def main():
     p.add_argument('--flh-difficulty', choices=['hard','medium'], help='FrozenLake map set for the entire run (default: hard)')
     p.add_argument('--method', choices=read(CONFIGS/'methods.json'), required=True)
     p.add_argument('--model-dir', type=Path, default=os.environ.get('MODEL_DIR'))
-    p.add_argument('--anchor16', type=Path, help='Optional original shared step-16 checkpoint; default is a fresh base')
+    p.add_argument('--ucf-resamples', type=int, help='Whole-turn draws per selected node (M)')
+    p.add_argument('--anchor16', type=Path, help=argparse.SUPPRESS)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--token-budget', type=int, help='Assistant tokens over the entire trajectory')
     p.add_argument('--output-root', type=Path, default=Path(os.environ.get('RUN_ROOT', ROOT/'runs')))
@@ -130,22 +129,27 @@ def main():
     group.add_argument('--validate-base', action='store_true',
                        help='Evaluate the original model on the fixed validation split and exit at step 0')
     args = p.parse_args()
-    if args.validate_base and (args.resume or args.anchor16 or args.until is not None):
+    if args.anchor16:
+        p.error('The V3 step-16 anchor requires Git tag v3-final.')
+    if args.validate_base and (args.resume or args.until is not None):
         p.error('--validate-base evaluates fresh weights without a training step or checkpoint')
     cfg = resolve(args, preview=args.print_config)
     if args.print_config:
         print(json.dumps(cfg, indent=2))
         return
+    phase = 'base-validation' if args.validate_base else ('smoke' if args.smoke else 'train')
+    out = args.output_root.resolve()/phase/cfg['run_label']
+    if args.resume:
+        for name in ('launch.json', 'config.json', 'launch_config.json'):
+            path = out / name
+            if path.is_file():
+                check_release(read(path), cfg['method'])
     check_inputs(cfg, args.size, args.model_dir)
     if args.check:
         print(f'Checked {args.size}/{args.env}/{args.method} inputs and model metadata')
         return
     if args.until is not None and not 1 <= args.until <= cfg['steps']:
         raise ValueError('--until must be between 1 and configured steps')
-    if args.anchor16 and (args.smoke or (args.until is not None and args.until <= 16)):
-        raise ValueError('Use --anchor16 only for updates after step 16')
-    if args.anchor16 and not args.resume and file_hash(args.anchor16) != ANCHOR_SHA:
-        raise ValueError('Historical step-16 checkpoint SHA256 mismatch')
     check_weights(args.model_dir)
     for pkg, target in [('torch','2.10.0'),('vllm','0.19.1'),('transformers','5.22.2')]:
         found = version(pkg).split('+')[0]
@@ -155,15 +159,13 @@ def main():
     index = int(cfg['actor_device'].split(':')[-1])
     if not torch.cuda.is_available() or torch.cuda.device_count() <= index:
         raise ValueError(f"Selected layout requires at least {index+1} visible CUDA devices")
-    phase = 'base-validation' if args.validate_base else ('smoke' if args.smoke else 'train')
-    out = args.output_root.resolve()/phase/cfg['run_label']
     out.mkdir(parents=True, exist_ok=True)
     with (out/'.run.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         frozen = out/'launch.json'
         if args.resume:
             if not (out/'checkpoint.pt').is_file() or not frozen.exists():
-                raise ValueError('This run has no resumable checkpoint')
+                raise ValueError('Resume requires checkpoint.pt and launch.json. Restore historical V3 archives with Git tag v3-final.')
             if read(frozen) != cfg:
                 raise ValueError('Resolve the same config used to produce this checkpoint')
         elif any(f.name != '.run.lock' for f in out.iterdir()):

@@ -1,5 +1,4 @@
 """Drive the HTTP bridge and RL adapters with a two-product test double."""
-import copy
 import json
 import subprocess
 import sys
@@ -12,7 +11,6 @@ import pytest
 from transformers import AutoTokenizer
 
 import patr_core as core
-from cert_collect import replay
 from external_baselines import gigpo_weights
 from scripts.prepare_webshop import prepare
 from scripts.webshop_server import Simulator, handler_for
@@ -29,11 +27,12 @@ class CatalogFixture:
     def reset(self, session):
         assert type(session) is int
         self.page = 'home'
-        self.server.user_sessions[str(session)] = self.page
+        self.session = str(session)
+        self.server.user_sessions[self.session] = {'options': {}}
         return f'Find bag {session}', None
 
     def get_available_actions(self):
-        choices = {'home': [], 'listing':['blue bag','red bag'], 'blue bag':['buy now'], 'red bag':['buy now'], 'done':[]}
+        choices = {'home': [], 'listing':['blue bag','red bag'], 'blue bag':['buy now', 'large'], 'red bag':['buy now', 'large'], 'done':[]}
         return {'has_search_bar': self.page == 'home','clickables': choices[self.page]}
 
     def step(self, action):
@@ -41,6 +40,8 @@ class CatalogFixture:
             self.page = 'listing'
         elif self.page == 'listing' and action in ('click[blue bag]','click[red bag]'):
             self.page = action[6:-1]
+        elif self.page in ('blue bag','red bag') and action == 'click[large]':
+            self.server.user_sessions[self.session]['options']['size'] = 'large'
         elif self.page in ('blue bag','red bag') and action == 'click[buy now]':
             score = 1. if self.page == 'blue bag' else .4
             self.page = 'done'
@@ -97,87 +98,16 @@ def test_action_trajectory_replay_rewards_and_gigpo(server):
         count = b.ntokens
         assert b.ids[prompt_len:prompt_len+count] == out.token_ids[:count]
         assert b.mask[prompt_len+count] == 0
-        node = {'branch':copy.deepcopy(b),'boundary':len(b.ids),'j':i,'turn':2,'state':b.env.s}
-        child = replay(core,node,task,cfg)
-        assert child.env.anchor() == b.env.anchor()
         color = 'blue bag' if i%2 else 'red bag'
         core.apply_response(b,sampled(tok,'```click['+color+']```'),tok,cfg)
         core.apply_response(b,sampled(tok,'```click[buy now]```'),tok,cfg)
         assert b.terminal == ('success' if i%2 else 'purchase_incomplete')
-        assert child.env.history == ['search[bag]']
         branches.append(b)
     m = core.evaluation_metrics(branches,[task])
     assert m['success_rate_pct']==50 and m['pass_at_4_pct']==100
     assert m['webshop_mean_score'] == pytest.approx(.7)
     assert len(gigpo_weights(branches,1)) == 12
     assert not sim.env.server.user_sessions
-
-
-def test_webshop_v3_collector_full_complement_on_cpu(server,tmp_path,monkeypatch):
-    """Use scripted generation; run the production capture store, selection, fork, replay and HT rows."""
-    import importlib
-    import math
-    from types import ModuleType
-    import numpy as np
-    from ucf_v3 import make_collect
-    from ucf_weights import training_weights_ucf
-
-    pytest.importorskip('torch')
-    for name in ('vllm','vllm.sampling_params','vllm.v1','vllm.v1.sample',
-                 'vllm.v1.sample.logits_processor','vllm.v1.sample.logits_processor.interface'):
-        monkeypatch.setitem(sys.modules,name,ModuleType(name))
-    sys.modules['vllm'].SamplingParams = lambda **options: NS(**options)
-    sys.modules['vllm.sampling_params'].RequestOutputKind = NS(FINAL_ONLY=1)
-    interface = sys.modules['vllm.v1.sample.logits_processor.interface']
-    interface.LogitsProcessor, interface.MoveDirectionality = object, NS(SWAP=1)
-    monkeypatch.delitem(sys.modules,'original_logits',raising=False)
-    capture_module = importlib.import_module('original_logits')
-    from first_fence import locate_token_prefix
-
-    url, sim = server
-    tok = AutoTokenizer.from_pretrained(ROOT/'metadata/Qwen3.5-4B',local_files_only=True)
-    vocab = len(tok)
-    lp = -math.log(vocab)
-    original_tokens = tok.encode('```search[bag]```',add_special_tokens=False)
-    boundary = locate_token_prefix(original_tokens,0,len(original_tokens),tok)
-
-    class Backend:
-        model_config = NS(get_vocab_size=lambda: vocab)
-        def __init__(self):
-            self.queue = []
-        def add_request(self, rid, prompt, params):
-            tokens = prompt['prompt_token_ids']
-            tag = getattr(params,'extra_args',{}).get('ucf_original_logits')
-            if tag:
-                cap, key = capture_module._active, tuple(tag['key'])
-                cap.register(key,tokens,params)
-                cap.save(key,tokens,original_tokens[:boundary],np.full(vocab,lp,dtype=np.float32))
-                out = sampled(tok,'```search[bag]```')
-            else:
-                out = sampled(tok,' then ```click[blue bag]```')
-            out.logprobs = [{t:NS(logprob=lp)} for t in out.token_ids]
-            self.queue.append(NS(request_id=rid,finished=True,outputs=[out]))
-        def step(self):
-            rows,self.queue = self.queue,[]
-            return rows
-
-    cfg = json.loads((ROOT/'configs/common.json').read_text())
-    cfg.update(environment='webshop',max_turns=1,webshop_url=url,webshop_catalog=sim.catalog,
-               ucf_log_dir=str(tmp_path/'ucf_logs'))
-    (tmp_path/'status.json').write_text('{"current_step":1}')
-    monkeypatch.setenv('PATR_PROGRESS_PATH',str(tmp_path/'progress.json'))
-    tasks = [{'goal_id':i,'uid':f'webshop_{i}','environment':'webshop'} for i in (1500,1501)]
-    branches,metrics,events = make_collect(core,core.collect)(
-        tasks,NS(llm_engine=Backend()),tok,cfg,'ucf',np.random.default_rng(42))
-    assert metrics['original_logits_capture']['captured_nodes']==8
-    assert metrics['original_logits_capture']['pending_vectors']==0 and metrics['mean_forks']>0
-    assert metrics['initial_group_counts']['all_failure']==2
-    assert all(e['stratum']['original_class']=='SEARCH' and e['stratum']['unsampled_mass']==0 for e in events)
-    weights = training_weights_ucf(branches,2)
-    assert len(weights)>8 and all(np.isfinite(w) and w>0 for _,_,w in weights)
-    for b, _, _ in weights:
-        if hasattr(b,'ucf'):
-            assert b.ucf['rho']==.5 and len(b.ids)==len(b.old_logprobs)==len(b.mask)
 
 
 def test_full_catalog_requires_matching_index_and_paths(tmp_path):
@@ -208,3 +138,53 @@ def test_only_visible_actions_reach_simulator(server):
     assert env.resolve('CLICK[buy now]') == 0
     env.step('SEARCH[bag]')
     assert env.resolve('search[hidden]')==0 and env.resolve('CLICK[BLUE BAG]')=='click[blue bag]'
+
+
+def test_bridge_option_change_on_same_page(server):
+    from task_envs import observed_state, same_outcome
+    url, sim = server
+    env = WebShopEnv({'goal_id':1500}, {'webshop_url':url, 'webshop_catalog':sim.catalog})
+    for command in ('search[bag]', 'click[blue bag]'):
+        env.step(command)
+    before = observed_state(env)
+    env.step('click[large]')
+    assert env.page['selected_options'] == {'size':'large'} and env.page['observation'] == before[0]
+    assert not same_outcome(before, observed_state(env))
+
+
+def test_ucf_skips_empty_argument_before_valid_action(server):
+    from task_envs import turn_outcome
+    url, sim = server
+    cfg = dict(json.loads((ROOT/'configs/common.json').read_text()), environment='webshop',
+               max_turns=15, webshop_url=url, webshop_catalog=sim.catalog)
+    task = {'environment':'webshop','goal_id':1500,'uid':'webshop_1500'}
+    tok = AutoTokenizer.from_pretrained(ROOT/'metadata/Qwen3.5-4B', local_files_only=True)
+    text = '```click[ ]``` then ```search[bag]``` tail'
+    for method in ('grpo', 'ucf'):
+        branch = core.start_branch(task, 0, tok, dict(cfg, method=method), '0')
+        core.apply_response(branch, sampled(tok, text), tok, cfg)
+        if method == 'ucf':
+            assert branch.actions == ['search[bag]'] and turn_outcome(branch)[0] == 'listing'
+        else:
+            assert branch.actions == [0]
+
+
+def test_ucf_evaluation_uses_flat_rollouts_and_valid_argument_protocol(server, monkeypatch):
+    import numpy as np
+    from ucf.ucf_v31 import make_collect
+    url, sim = server
+    cfg = dict(json.loads((ROOT/'configs/common.json').read_text()), environment='webshop',
+               max_turns=1, webshop_url=url, webshop_catalog=sim.catalog)
+    task = {'environment':'webshop','goal_id':1500,'uid':'webshop_1500'}
+    tok = AutoTokenizer.from_pretrained(ROOT/'metadata/Qwen3.5-4B', local_files_only=True)
+    monkeypatch.setitem(sys.modules, 'vllm', NS(SamplingParams=lambda **params: NS(**params)))
+    monkeypatch.setitem(sys.modules, 'vllm.sampling_params', NS(RequestOutputKind=NS(FINAL_ONLY=1)))
+    pending = []
+    def enqueue(rid, prompt, params):
+        assert params.temperature == cfg['eval_temperature'] and params.top_p == cfg['eval_top_p']
+        out = sampled(tok, '```click[ ]``` after ```search[bag]```')
+        pending.append(NS(request_id=rid, finished=True, outputs=[out]))
+    engine = NS(llm_engine=NS(add_request=enqueue, step=lambda: pending))
+    branches, _, _ = make_collect(core, core.collect)([task], engine, tok, cfg, 'grpo',
+                                                        np.random.default_rng(42), evaluation=True)
+    assert len(branches) == cfg['eval_samples'] and all(b.actions == ['search[bag]'] for b in branches)

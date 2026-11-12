@@ -31,3 +31,38 @@ class ValidationRecoveryTests(unittest.TestCase):
             call=Mock()
             self.assertFalse(complete_checkpoint_validation(d,40,self.cfg,self.tasks,call))
             call.assert_not_called()
+
+
+def test_resume_at_full_queue_target_finishes_pending_test_without_update(tmp_path, monkeypatch):
+    import random
+    import sys
+    import numpy as np
+    import train
+    from scripts import hardware, q35_thinking_policy
+
+    cfg = dict(method='grpo', seed=42, steps=400, environment='sokoban',
+               eval_every=25, learning_rate=1e-6)
+    launch = tmp_path/'launch.json'
+    launch.write_text(json.dumps(cfg))
+    state = dict(config=cfg, step=400, model={}, optimizer={},
+                 rng=np.random.default_rng(42).bit_generator.state,
+                 python_rng=random.getstate(), torch_rng=train.torch.get_rng_state(), cuda_rng=[])
+    train.torch.save(state, tmp_path/'checkpoint.pt')
+    monkeypatch.setattr(sys, 'argv', ['train.py', '--config', str(launch), '--method', 'grpo',
+                                      '--output-dir', str(tmp_path), '--resume', '--stop-after-step', '400'])
+    monkeypatch.setattr(train, 'build_models', lambda *args: (Mock(), None, None, Mock()))
+    monkeypatch.setattr(train.torch.optim, 'AdamW', Mock())
+    monkeypatch.setattr(train, 'sync_weights', Mock())
+    monkeypatch.setattr(train, 'update', Mock(side_effect=AssertionError('unexpected update')))
+    monkeypatch.setattr(hardware, 'annotate_hardware', Mock())
+    monkeypatch.setattr(q35_thinking_policy, 'check_prompt_contract', lambda *args: {})
+    monkeypatch.setattr(train.signal, 'signal', Mock())
+    monkeypatch.setenv('PATR_PROGRESS_PATH', '')
+    tasks = ValidationRecoveryTests.tasks
+    ValidationRecoveryTests().complete(tmp_path/'validation_0400.json')
+    monkeypatch.setattr(train, 'make_datasets', lambda cfg: dict(validation=tasks, test=tasks))
+    evaluator = Mock(return_value=dict(n_tasks=1))
+    monkeypatch.setattr(train, 'evaluate', evaluator)
+    train.main()
+    assert evaluator.call_count == 1 and evaluator.call_args.args[-1] == 'test'
+    assert json.loads((tmp_path/'status.json').read_text())['status'] == 'complete'

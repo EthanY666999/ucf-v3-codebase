@@ -1,14 +1,13 @@
-"""Explicit, separately versioned numerical protocol for paired V3 pilots."""
+"""Apply the release inference kernels and restore native PyTorch for training."""
 import argparse
 import hashlib
-import json
 import os
 from pathlib import Path
 import sys
 
 os.environ['VLLM_BATCH_INVARIANT'] = '1'
 root = Path(__file__).resolve().parents[1] / 'code'
-sys.path[:0] = [str(root), str(root / 'ucf')]
+sys.path.insert(0, str(root))
 
 
 def main():
@@ -16,8 +15,6 @@ def main():
     p.add_argument('--config', required=True, type=Path)
     p.add_argument('--output-dir', required=True, type=Path)
     a, _ = p.parse_known_args()
-    cfg = json.loads(a.config.read_text())
-    assert cfg['vllm_batch_invariant_scoped'] is True
     if sys.flags.optimize:
         raise RuntimeError('Run without python -O to retain numerical and token-boundary checks')
     import train

@@ -3,7 +3,6 @@ import copy,math
 from collections import defaultdict
 import numpy as np
 from patr_core import training_weights
-from ucf.ucf_weights import pseudo
 
 def starpo_select(branches,n_tasks,keep_fraction):
     assert 0<keep_fraction<=1
@@ -51,8 +50,14 @@ def gigpo_weights(branches,n_tasks,gamma=.95,omega=1.):
         for i,v in zip(idxs,normalized([entries[i][-1] for i in idxs])):step_adv[i]=v
     result=[]
     for i,(b,boundary,ae,w,anchor,ret) in enumerate(entries):
-        row=pseudo(b,boundary,'gigpo',ae+omega*step_adv[i],1.,b.ntokens,1.,'gigpo')
-        del row.ucf
+        end = boundary
+        while end < len(b.ids) and b.mask[end]:
+            end += 1
+        row = copy.copy(b)
+        row.ids = b.ids[:end]
+        row.old_logprobs = b.old_logprobs[:end]
+        row.mask = [0] * boundary + b.mask[boundary:end]
+        row.lineage = b.lineage + '.gigpo'
         row.gigpo=dict(episode_advantage=ae,step_advantage=step_adv[i],discounted_return=ret,anchor=anchor,group_size=len(groups[anchor]))
         result.append((row,ae+omega*step_adv[i],w))
     return result

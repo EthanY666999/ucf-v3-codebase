@@ -20,17 +20,17 @@ python -m pip install -r requirements-gpu.txt
 python -m pip check
 nvidia-smi
 python -c "import torch,vllm,transformers; print(torch.__version__,torch.version.cuda,vllm.__version__,transformers.__version__,torch.cuda.device_count())"
-python -m pytest -q tests/test_original_logits.py
+python -m pytest -q
 ```
 
-使用内网 wheelhouse 时可将安装行替换为 `python -m pip install --no-index --find-links /mnt/wheels -r requirements-gpu.txt`。`VLLM_BATCH_INVARIANT` 只在推理阶段生效，优化阶段恢复原生 PyTorch 算子。UCF 主分支使用原始采样时的完整 logits 观察器与 Python 补集采样。部署验收应覆盖一次完整采样、反向传播、权重同步和验证。
+使用内网 wheelhouse 时可将安装行替换为 `python -m pip install --no-index --find-links /mnt/wheels -r requirements-gpu.txt`。`VLLM_BATCH_INVARIANT` 只在推理阶段生效，优化阶段恢复原生 PyTorch 算子。UCF 的原始回合、重掷和后续生成共用 vLLM 采样接口。部署验收应覆盖一次完整采样、反向传播、权重同步和验证。
 
 ## 设备、磁盘和恢复
 
 2B 配置默认同卡。4B 配置默认两张可见卡，在单进程内显式把 FP32 actor 和 AdamW 放到逻辑 `cuda:1`，参考模型和 vLLM 在 `cuda:0`。权重逐张量复制并检查同步。`CUDA_VISIBLE_DEVICES` 设置物理卡顺序，`--actor-device` 可指定逻辑卡。一次启动一个训练进程，不用 torchrun/DDP。跨卡实现需在目标机验收。相同 run 目录有互斥文件锁；在不同目录安排作业时由调度器分配卡。
 
-4B 文本模型有 4,205,751,296 个参数。actor 参数和梯度各约 15.67 GiB，普通 AdamW 的两个状态约 31.34 GiB，训练卡静态合计约 **62.67 GiB**。参考模型与推理文本权重各约 **7.83 GiB**。这些是静态下界，真实峰值还包含激活、KV、完整词表向量和同步工作区。单 80G 全部同放的静态下界约 78.34 GiB。两张 80G 的默认路径使用单轨迹训练微批，推理并发 16；仍须实测一条接近预算上限的轨迹，普通一轮冒烟未必触及峰值。[原 4B 参数计数](https://github.com/EthanY666999/ucf-agent-rl/blob/4ab22056f471c79098e05bf41c11350f632c60ce/docs/MEMORY_AND_RUNTIME.md)
+4B 文本模型有 4,205,751,296 个参数。actor 参数和梯度各约 15.67 GiB，普通 AdamW 的两个状态约 31.34 GiB，训练卡静态合计约 **62.67 GiB**。参考模型与推理文本权重各约 **7.83 GiB**。这些是静态下界，真实峰值还包含激活、KV cache 和同步工作区。单 80G 全部同放的静态下界约 78.34 GiB。两张 80G 的默认路径使用单轨迹训练微批，推理并发 16；仍须实测一条接近预算上限的轨迹，普通一轮冒烟未必触及峰值。[原 4B 参数计数](https://github.com/EthanY666999/ucf-agent-rl/blob/4ab22056f471c79098e05bf41c11350f632c60ce/docs/MEMORY_AND_RUNTIME.md)
 
-可调节 `--micro-batch-size`、`--micro-batch-token-limit`、`--vllm-max-sequences` 和 `--vllm-memory-fraction`。完整长序列超过微批 soft limit 时仍单独训练，改变整条轨迹的 token 上限属于不同实验。主机内存也需容纳 observer 的候选向量和 checkpoint 载入；每份向量约 `4 × vocab_size` 字节。
+可调节 `--micro-batch-size`、`--micro-batch-token-limit`、`--vllm-max-sequences` 和 `--vllm-memory-fraction`。完整长序列超过微批 soft limit 时仍单独训练，改变整条轨迹的 token 上限属于不同实验。主机内存还需容纳轨迹记录和 checkpoint 载入。
 
 4B 模型与优化器单份存档的静态估计约 47 GiB，2B 约 21 GiB。原子替换期间新旧两份会并存，还要给轨迹和验证记录留空间。用 `RUN_ROOT` 指向持久数据盘，替换前程序检验空余量。中断后用同配置和同一输出根运行 `--resume`，未提交到存档的后续步证据保留在恢复目录。权重保留在服务器，日常对外分享轻量收据。

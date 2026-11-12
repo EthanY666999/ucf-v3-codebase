@@ -20,10 +20,6 @@
     "method": "ucf",
     "ucf_beta": 0.0
   },
-  "token-partition": {
-    "method": "ucf",
-    "ucf_partition": "action_tokens"
-  },
   "starpo-s": {
     "method": "starpo_s",
     "flat_group_size": 4,
@@ -31,5 +27,21 @@
     "clip_low": 0.2,
     "clip_high": 0.28,
     "kl_coefficient": 0.0
+  },
+  "ucf-merge": {
+    "method": "ucf",
+    "ucf_estimator": "merge"
+  },
+  "ucf-success": {
+    "method": "ucf",
+    "ucf_estimator": "success"
+  },
+  "ucf-m1": {
+    "method": "ucf",
+    "ucf_resamples": 1
+  },
+  "ucf-uniform": {
+    "method": "ucf",
+    "ucf_turn_prior": "uniform"
   }
 }

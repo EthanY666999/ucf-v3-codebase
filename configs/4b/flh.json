@@ -1,7 +1,6 @@
 {
   "environment": "flh",
   "max_turns": 20,
-  "repeat_limit": 21,
   "max_response_tokens": 20480,
   "actor_device": "cuda:1",
   "vllm_memory_fraction": 0.45,

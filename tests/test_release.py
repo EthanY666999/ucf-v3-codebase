@@ -1,20 +1,14 @@
-import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
 import pytest
 from transformers import AutoTokenizer
 
 import patr_core as core
-from cert_entropy import token_map
-from first_fence import locate_token_prefix
 from response_protocol import first_block
 from scripts.q35_thinking_policy import check_prompt_contract
-from webshop import CLASSES, family_tokens
-from v3_sampling import complement_sample
 
 ROOT = Path(__file__).resolve().parents[1]
 MATRIX = [(size, p.stem) for size in ('2b','4b') for p in (ROOT/'configs'/size).glob('*.json')]
@@ -33,13 +27,13 @@ def test_published_environments():
 
 @pytest.mark.parametrize('size,env', MATRIX)
 def test_supported_presets_render_through_cli(size, env):
-    for method in ['ucf','gigpo','grpo4','grpo8','starpo-s','no-part-b'] + ([] if env=='webshop' else ['token-partition']):
+    for method in json.loads((ROOT/'configs/methods.json').read_text()):
         cfg = json.loads(subprocess.check_output(command(size,env,method,'--print-config'), cwd=ROOT.parent))
         assert cfg['environment'] == env and cfg['flat_group_size'] == (8 if method=='grpo8' else 4)
         assert cfg['ucf_beta'] == (0 if method=='no-part-b' else .25)
-        assert cfg['ucf_variant'] == 'uniform' and cfg['eval_every'] == 25
-        assert cfg['ucf_probability_source'] == 'original_sampling_logits'
-        assert cfg['fork_point'] == 'first_fence'
+        assert cfg['ucf_variant'] == 'turn_resample' and cfg['eval_every'] == 25
+        assert cfg['ucf_target_forks'] == 3.0
+        assert cfg['ucf_resamples'] == (1 if method == 'ucf-m1' else 2)
         if env == 'flh':
             assert cfg['flh_difficulty'] == 'hard'
             assert (cfg['max_turns'], cfg['max_response_tokens']) == (20, 20480)
@@ -79,30 +73,20 @@ def test_medium_flh_uses_distinct_frozen_maps_and_output(size):
 def test_production_token_and_dialog_contract(size):
     tok = AutoTokenizer.from_pretrained(ROOT/'metadata'/f'Qwen3.5-{size}',local_files_only=True)
     assert check_prompt_contract(tok)['passed']
-    grid,_ = token_map(tok)
-    assert set(grid.values()) == {1,2,3,4}
-    web = family_tokens(tok)
-    assert set(web.values()) == {1,2}
     text = 'Working. ```search[waterproof backpack]``` other'
-    ids = tok.encode(text, add_special_tokens=False)
-    bd = locate_token_prefix(ids, 0, len(ids), tok)
-    assert tok.decode(ids[:bd]).endswith('```')
-    assert web[ids[bd]] == 1 and first_block(text,'webshop').group(1) == 'search[waterproof backpack]'
-    lp = np.log(np.repeat(1/len(tok),len(tok)))
-    forced, label = complement_sample(lp, ids[bd], web, CLASSES, 42)
-    assert CLASSES[web.get(forced,0)] != 'SEARCH' and label['unsampled_mass'] == 0.
+    assert first_block(tok.decode(tok.encode(text)), 'webshop').group(1) == 'search[waterproof backpack]'
 
 
-def test_selection_references_and_historical_anchor():
-    base = ROOT/'protocols'
-    actual = json.loads((base/'V3_S_ucf_budget10240_from16_seed42.json').read_text())
-    current = json.loads(subprocess.check_output(command('2b','sokoban','ucf','--print-config')))
-    for k in ('train_batch_size','mini_batch_tasks','clip_high','clip_low','max_response_tokens',
-              'max_context_tokens','ucf_beta','ucf_target_forks','fork_point','ucf_probability_source','dataset_sha256'):
-        assert current[k] == actual[k]
-    assert 'anchor16' not in current
-    invalid = subprocess.run(command('4b','flh','ucf','--anchor16','cp.pt','--print-config'),capture_output=True)
-    assert invalid.returncode
+def test_archived_launch_is_rejected_before_gpu_or_writes(tmp_path):
+    import shutil
+    out = tmp_path / 'train/2b_sokoban_ucf_seed42'
+    out.mkdir(parents=True)
+    old = ROOT/'docs/archive/V3_S_ucf_budget10240_from16_seed42.json'
+    shutil.copyfile(old, out/'launch.json')
+    invalid = subprocess.run(command('2b','sokoban','ucf','--resume','--output-root',str(tmp_path)),
+                             capture_output=True)
+    assert invalid.returncode and b'v3-final' in invalid.stderr
+    assert list(out.iterdir()) == [out/'launch.json']
 
 
 def test_failed_steps_archived_before_replaying(tmp_path):
@@ -112,7 +96,13 @@ def test_failed_steps_archived_before_replaying(tmp_path):
     path.write_bytes(raw)
     rollout = tmp_path/'rollouts_0002.jsonl.gz'
     rollout.write_bytes(b'old')
+    logs = tmp_path/'ucf_logs'
+    logs.mkdir()
+    for filename in ('select_0001.jsonl', 'candidates_0002.jsonl', 'select_0002.jsonl',
+                     'budget_0002.json', 'raw_leaves_0002.jsonl.gz'):
+        (logs/filename).write_bytes(b'evidence')
     archive_uncommitted(tmp_path,1)
+    assert list(logs.iterdir()) == [logs/'select_0001.jsonl']
     assert path.read_bytes() == b'{"step":1}\n'
     folder, = (tmp_path/'uncommitted').iterdir()
     assert (folder/path.name).read_bytes()==raw

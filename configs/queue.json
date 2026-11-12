@@ -1,0 +1,11 @@
+[
+  {"method": "ucf"},
+  {"method": "grpo4"},
+  {"method": "gigpo"},
+  {"method": "ucf-merge"},
+  {"method": "ucf-success"},
+  {"method": "ucf-m1"},
+  {"method": "ucf-uniform"},
+  {"method": "no-part-b"},
+  {"method": "grpo8"}
+]

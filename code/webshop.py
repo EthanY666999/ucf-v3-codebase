@@ -7,35 +7,20 @@ from urllib.request import Request, urlopen
 
 COMMAND = re.compile(r'(search|click)\[([^\n`]+)\]', re.IGNORECASE)
 BLOCK = re.compile(r'```\s*((?:search|click)\[[^\n`]+\])\s*```', re.IGNORECASE)
-CLASSES = {0: 'RESIDUAL', 1: 'SEARCH', 2: 'CLICK'}
 
 
-def action_family(action):
-    match = COMMAND.fullmatch(str(action))
-    if not match or not match.group(2).strip():
-        return 0
-    return 1 if match.group(1).lower() == 'search' else 2
+def command_block(text, require_argument=False):
+    for block in BLOCK.finditer(text):
+        if not require_argument or COMMAND.fullmatch(block.group(1)).group(2).strip():
+            return block
+    return None
 
 
-def family_tokens(tokenizer):
-    """Partition by the immediate sampled token. All unlisted IDs are residual."""
-    mapping = {}
-    for word, family in [('search', 1), ('click', 2)]:
-        for space in ('', ' '):
-            text = '```' + space + word + '[x]```'
-            ids = tokenizer.encode(text, add_special_tokens=False)
-            prefix = ''
-            for token in ids:
-                piece = tokenizer.decode([token])
-                if prefix.startswith('```') and not prefix[3:].strip() and piece.strip().startswith(word):
-                    if token in mapping and mapping[token] != family:
-                        raise ValueError('Ambiguous action token')
-                    mapping[token] = family
-                    break
-                prefix += piece
-            else:
-                raise ValueError(f'Unsupported command tokenization for {text!r}')
-    return mapping
+def parse_command(text, require_argument=False):
+    match = command_block(text, require_argument)
+    if match and COMMAND.fullmatch(match.group(1)).group(2).strip():
+        return match.group(1)
+    return 0
 
 
 def bridge_call(url, route, payload=None):
@@ -46,7 +31,8 @@ def bridge_call(url, route, payload=None):
 
 
 class WebShopAgent:
-    def __init__(self):
+    def __init__(self, require_argument=False):
+        self.require_argument = require_argument
         instruction = ('Complete the shopping instruction in the simulator. Read the page and its available '
                        'actions. To search, give a query. To click, use a visible label. End your response '
                        'with one command, for example ```search[red running shoes]``` or ```click[buy now]```.')
@@ -57,8 +43,7 @@ class WebShopAgent:
 
     def update_from_model(self, text):
         self.chat_completions.append({'role': 'assistant', 'content': text})
-        match = BLOCK.search(text)
-        return SimpleNamespace(action=match.group(1) if match and action_family(match.group(1)) else 0)
+        return SimpleNamespace(action=parse_command(text, self.require_argument))
 
 
 class WebShopEnv:

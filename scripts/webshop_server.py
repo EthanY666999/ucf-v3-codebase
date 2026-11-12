@@ -52,7 +52,10 @@ class Simulator:
                     raise ValueError('Action after a terminal purchase')
                 observation, score, done, _ = env.step(action)
             return {'catalog': self.catalog, 'observation': observation,
-                    'available': env.get_available_actions(), 'done': bool(done), 'score': float(score)}
+                    'available': env.get_available_actions(), 'done': bool(done), 'score': float(score),
+                    # The upstream SimServer records option name -> clicked value in
+                    # item_page and uses this same dictionary to score the purchase.
+                    'selected_options': dict(env.server.user_sessions[session]['options'])}
         finally:
             env.server.user_sessions.pop(session, None)
 

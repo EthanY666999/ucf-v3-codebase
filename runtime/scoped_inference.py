@@ -80,7 +80,7 @@ def configure_train(train, torch, vllm):
     from vllm.model_executor.layers import batch_invariant as backend
     assert torch.__version__.split('+')[0] == '2.10.0'
     assert vllm.__version__ == '0.19.1'
-    assert not hasattr(train, '_v3_inference_scope'), 'Already configured'
+    assert not hasattr(train, '_inference_scope'), 'Already configured'
     scope = InferenceScope(torch, backend)
     original_llm = vllm.LLM
 
@@ -118,5 +118,5 @@ def configure_train(train, torch, vllm):
 
     for name in ('selected_logprobs', 'update', 'sync_weights'):
         setattr(train, name, native_call(getattr(train, name)))
-    train._v3_inference_scope = scope
+    train._inference_scope = scope
     return scope

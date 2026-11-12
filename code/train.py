@@ -14,6 +14,8 @@ import hashlib
 import json
 import random
 import signal
+import shutil
+from functools import partial
 import time
 from collections import Counter
 from pathlib import Path
@@ -24,6 +26,7 @@ import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+from scripts.release_config import check_release
 from patr_core import (ROOT, atomic_json, append_json, make_datasets, collect,
                        evaluation_metrics, training_weights)
 
@@ -64,10 +67,6 @@ def build_models(cfg,seed):
                    attn_implementation='sdpa',local_files_only=True).to('cuda:0').eval()
     ref.requires_grad_(False)
     from scripts.q35_engine_loader import build_engine
-    observer_options = {}
-    if cfg.get('ucf_probability_source') == 'original_sampling_logits':
-        from original_logits import OriginalLogitsObserver
-        observer_options['logits_processors'] = [OriginalLogitsObserver]
     engine=build_engine(actor,model_path,LLM,sync_weights,dtype='bfloat16',
                tensor_parallel_size=1,distributed_executor_backend='uni',
                gpu_memory_utilization=cfg['vllm_memory_fraction'],
@@ -75,7 +74,7 @@ def build_models(cfg,seed):
                max_num_batched_tokens=4096,enable_chunked_prefill=True,
                enable_prefix_caching=True,limit_mm_per_prompt={'image':0,'video':0},
                seed=seed,enforce_eager=cfg.get('vllm_enforce_eager',False),disable_log_stats=True,
-               max_logprobs=-1 if cfg.get('ucf_v3',False) else 20, **observer_options)
+               max_logprobs=20)
     return actor,ref,engine,tokenizer
 
 
@@ -168,9 +167,9 @@ def update(actor,ref,optimizer,branches,cfg,method,tokenizer,rng,n_tasks):
         for b in branches:
             if b.task_id in idmap:
                 c=copy.copy(b);c.task_id=idmap[b.task_id];bs.append(c)
-        rows=training_weights(bs,len(chosen),method=='dapo')
+        rows=training_weights(bs,len(chosen))
         optimizer.zero_grad(set_to_none=True)
-        low=cfg['dapo_clip_low'] if method=='dapo' else cfg['clip_low']
+        low=cfg['clip_low']
         total_loss=0.;before=None
         for chunk in microbatches(rows,cfg):
             ids,attn,mask,adv,weight,old=pack(chunk,tokenizer.pad_token_id,next(actor.parameters()).device)
@@ -213,15 +212,13 @@ def update(actor,ref,optimizer,branches,cfg,method,tokenizer,rng,n_tasks):
 def save_checkpoint(path,actor,optimizer,step,rng,cfg,elapsed):
     path=Path(path)
     path.parent.mkdir(parents=True,exist_ok=True)
-    if cfg.get('ucf_v3',False):
-        import shutil
-        # The old checkpoint remains intact if the temporary replacement cannot
-        # fit. Reserve8GiB for logs and the operating system on this mount.
-        tensor_bytes=sum(p.numel()*p.element_size() for p in actor.parameters())
-        tensor_bytes+=sum(v.numel()*v.element_size() for s in optimizer.state.values() for v in s.values() if torch.is_tensor(v))
-        required=int(tensor_bytes*1.03)+8*2**30
-        if shutil.disk_usage(path.parent).free<required:
-            raise OSError(f'Checkpoint disk reserve: need {required} free bytes before atomic write')
+    # The old checkpoint remains intact if the temporary replacement cannot
+    # fit. Reserve8GiB for logs and the operating system on this mount.
+    tensor_bytes=sum(p.numel()*p.element_size() for p in actor.parameters())
+    tensor_bytes+=sum(v.numel()*v.element_size() for s in optimizer.state.values() for v in s.values() if torch.is_tensor(v))
+    required=int(tensor_bytes*1.03)+8*2**30
+    if shutil.disk_usage(path.parent).free<required:
+        raise OSError(f'Checkpoint disk reserve: need {required} free bytes before atomic write')
     # torch.save handles CUDA tensors; restore maps to CPU before copying to model.
     state={'step':step,'model':actor.state_dict(),'optimizer':optimizer.state_dict(),
            'rng':rng.bit_generator.state,'torch_rng':torch.get_rng_state(),
@@ -274,6 +271,32 @@ def write_rollouts(path,branches,tasks,mode='wt',attempt=None):
                 trace=b.trace,resample_attempt=attempt))+'\n')
 
 
+def configure_ucf(cfg, out):
+    import patr_core
+    from ucf.ucf_v31 import make_collect
+    from ucf.ucf_weights import training_weights_ucf
+    from ucf.component_grad import component_grad, component_names
+
+    global collect, training_weights, update
+    collect = make_collect(patr_core, patr_core.collect)
+    training_weights = partial(training_weights_ucf, cfg=cfg)
+    original_update = update
+    def ucf_update(actor, ref, optimizer, branches, cfg, method, tokenizer, rng, n_tasks):
+        step = json.loads((out / 'status.json').read_text())['current_step']
+        measured = step == 1 or step % cfg['eval_every'] == 0
+        start = time.monotonic()
+        diagnostics = {part: component_grad(actor, ref, branches, cfg, tokenizer, part)
+                       for part in component_names(cfg)} if measured else None
+        seconds = time.monotonic() - start
+        result = original_update(actor, ref, optimizer, branches, cfg, method, tokenizer, rng, n_tasks)
+        result.update(ucf_preupdate_fullbatch_components=diagnostics,
+                      ucf_component_diagnostics_computed=measured,
+                      ucf_component_diagnostic_seconds=seconds)
+        return result
+    update = ucf_update
+    cfg['ucf_log_dir'] = str(out / 'ucf_logs')
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--method',required=True,choices=['grpo','ucf','gigpo','starpo_s'])
@@ -284,56 +307,32 @@ def main():
     parser.add_argument('--output-dir',type=Path)
     parser.add_argument('--eval-only',action='store_true')
     parser.add_argument('--validate-base',action='store_true')
-    parser.add_argument('--fork_point',choices=['first_fence'],default=None)
     args=parser.parse_args()
     cfg=json.loads((ROOT/args.config).read_text())
+    check_release(cfg, args.method)
     if args.validate_base and (args.smoke or args.resume or args.eval_only or
-                               args.stop_after_step is not None or cfg.get('anchor16')):
+                               args.stop_after_step is not None):
         parser.error('--validate-base requires fresh weights and exits at step 0')
-    if args.fork_point is not None:
-        assert args.method=='ucf'
-        cfg['fork_point']=args.fork_point
-    assert cfg.get('fork_point') in (None,'first_fence')
     if args.smoke:
-        cfg.update(steps=1,train_batch_size=4,mini_batch_tasks=4,eval_every=1,save_every=1,
-                   max_response_tokens=cfg['max_response_tokens'] if cfg.get('fork_point')=='first_fence' or cfg.get('ucf_corrections') else 1024)
+        cfg.update(steps=1,train_batch_size=4,mini_batch_tasks=4,eval_every=1,save_every=1)
     seed=cfg['seed']
     out=args.output_dir or ROOT/'runs'/('smoke' if args.smoke else 'formal')/f'{args.method}_seed{seed}'
+    cfg['method'] = args.method
+    cp = out / 'checkpoint.pt'
+    if args.resume:
+        state = torch.load(cp, map_location='cpu', weights_only=False, mmap=True)
+        check_release(state['config'], args.method)
     if args.method in ['starpo_s','gigpo']:
         import sys
         from external_baselines import configure
         configure(sys.modules[__name__],cfg,args.method)
     if args.method=='ucf':
-        import sys,patr_core
-        sys.path.insert(0,str(ROOT/'ucf'))
-        from ucf_v3 import make_collect
-        from ucf_weights import training_weights_ucf
-        from ucf_runtime import configure_builder
-        configure_builder(sys.modules[__name__])
-        global collect,training_weights
-        collect=make_collect(patr_core,patr_core.collect)
-        training_weights=training_weights_ucf
-        from component_grad import component_grad
-        original_update=sys.modules[__name__].update
-        def ucf_update(actor,ref,optimizer,branches,cfg,method,tokenizer,rng,n_tasks):
-            # Exact component measurements cost two additional backward passes.
-            # V3 measures them on its existing validation cadence; the actual
-            # optimizer still checks finite loss/gradient and updates every step.
-            measured=True
-            if cfg.get('ucf_v3',False):
-                status=json.loads((Path(os.environ['PATR_PROGRESS_PATH']).parent/'status.json').read_text())
-                step=status['current_step']
-                measured=step==1 or step%cfg['eval_every']==0
-            diagnostic_start=time.monotonic()
-            diagnostics={part:component_grad(actor,ref,branches,cfg,tokenizer,part) for part in ['A','B']} if measured else None
-            diagnostic_seconds=time.monotonic()-diagnostic_start
-            result=original_update(actor,ref,optimizer,branches,cfg,method,tokenizer,rng,n_tasks)
-            result['ucf_preupdate_fullbatch_components']=diagnostics
-            result['ucf_component_diagnostics_computed']=measured
-            result['ucf_component_diagnostic_seconds']=diagnostic_seconds
-            return result
-        sys.modules[__name__].update=ucf_update
-        cfg['ucf_log_dir']=str(out/'ucf_logs')
+        configure_ucf(cfg, out)
+    if args.resume:
+        previous = {k:v for k,v in state['config'].items() if k not in RUNTIME_KEYS}
+        requested = {k:v for k,v in cfg.items() if k not in RUNTIME_KEYS}
+        if requested != previous:
+            raise ValueError('Cannot resume after an algorithm configuration change')
     out.mkdir(parents=True,exist_ok=True)
     from scripts.hardware import annotate_hardware
     annotate_hardware(out,cfg)
@@ -355,7 +354,7 @@ def main():
         atomic_json(out/'status.json',dict(status='evaluation_complete',method=args.method))
         return
     # Record the original model's scores on the map set selected at launch.
-    fresh_flh = cfg.get('environment') == 'flh' and not (args.resume or args.smoke or cfg.get('anchor16'))
+    fresh_flh = cfg.get('environment') == 'flh' and not (args.resume or args.smoke)
     if args.validate_base or fresh_flh:
         os.environ['PATR_PROGRESS_PATH'] = str(out/'progress.json')
         base = evaluate(engine, tokenizer, cfg, data['validation'], out/'validation_0000.json', 100042, 'validation')
@@ -383,35 +382,21 @@ def main():
     optimizer=optimizer_cls(actor.parameters(),**optimizer_options,lr=cfg['learning_rate'],betas=(.9,.999),eps=1e-8,weight_decay=0.)
     rng=np.random.default_rng(seed)
     start_step=0;previous_elapsed=0.
-    cp=out/'checkpoint.pt'
-    importing_anchor = bool(cfg.get('anchor16')) and not args.resume
-    if args.resume or importing_anchor:
-        source = Path(cfg['anchor16']) if importing_anchor else cp
-        state=torch.load(source,map_location='cpu',weights_only=False,mmap=True)
-        if importing_anchor:
-            assert state['step'] == 16 and state['config']['max_response_tokens'] == 4096
-        else:
-            assert {k:v for k,v in state['config'].items() if k not in RUNTIME_KEYS}=={k:v for k,v in cfg.items() if k not in RUNTIME_KEYS},'Cannot resume after an algorithm configuration change'
+    if args.resume:
         actor.load_state_dict(state['model']);optimizer.load_state_dict(state['optimizer'])
         start_step=state['step'];rng.bit_generator.state=state['rng']
         torch.set_rng_state(state['torch_rng']);torch.cuda.set_rng_state_all(state['cuda_rng']);random.setstate(state['python_rng'])
         previous_elapsed=state.get('elapsed_seconds',0.)
         del state
-        if args.resume:
-            from scripts.run_recovery import archive_uncommitted
-            archive_uncommitted(out,start_step)
-        if args.method=='ucf' and args.resume and not (cfg.get('anchor16') and start_step == 16):
-            from scripts.ucf_recovery import reconcile_ucf
-            print(json.dumps({'UCF_RECOVERY':reconcile_ucf(cfg['ucf_log_dir'],start_step)}),flush=True)
+        from scripts.run_recovery import archive_uncommitted
+        archive_uncommitted(out,start_step)
         sync_weights(actor,engine)
-        print(json.dumps({'RESUMED':start_step,'checkpoint':str(source)}),flush=True)
+        print(json.dumps({'RESUMED':start_step,'checkpoint':str(cp)}),flush=True)
     signal.signal(signal.SIGTERM,request_stop)
     signal.signal(signal.SIGINT,request_stop)
     os.environ['PATR_PROGRESS_PATH']=str(out/'progress.json')
     # Freeze test use to final evaluation. Training curves use a separate validation set.
     validation=data['validation'][:4] if args.smoke else data['validation']
-    if importing_anchor:
-        evaluate(engine,tokenizer,cfg,validation,out/'validation_0016.json',100042,'validation')
     if start_step==0 and not fresh_flh:
         base=evaluate(engine,tokenizer,cfg,validation,out/'validation_0000.json',100042,'validation')
         print(json.dumps({'initial_validation':base}),flush=True)
@@ -422,7 +407,7 @@ def main():
     # A restarted short pilot may already be at its requested boundary. Finish
     # pending checkpoint validation above, but never perform another update or
     # enter final-test evaluation merely because the supervisor restarted it.
-    if args.resume and args.stop_after_step is not None and start_step>=args.stop_after_step:
+    if args.resume and args.stop_after_step is not None and args.stop_after_step <= start_step < cfg['steps']:
         atomic_json(out/'status.json',dict(status='paused_checkpointed',step=start_step,
                     total_steps=cfg['steps'],method=args.method,
                     final_evaluation_pending=start_step==cfg['steps'],
@@ -447,9 +432,6 @@ def main():
             diagnostic=branches if cfg['flat_group_size']==4 else [b for b in branches if b.lineage in ['0','1','2','3']]
             stats.update(group_counts(diagnostic,len(tasks)))
             stats['initial_group_source']='first four original trajectories before filtering'
-        elif args.method in ['tree_random','patr']:
-            from scripts.hard_metrics import leaf_group_counts
-            stats.update(leaf_group_counts(branches,len(tasks)))
         if cfg.get('response_protocol')=='first_complete_action_block':
             from response_protocol import protocol_metrics
             stats['response_protocol_metrics']=protocol_metrics(branches)
@@ -469,7 +451,12 @@ def main():
         append_json(out/'train_metrics.jsonl',record)
         append_json(out/'branch_events.jsonl',dict(step=step,events=events))
         # Preserve complete raw sampled trajectories for auditing, including failures/pruning.
-        write_rollouts(out/f'rollouts_{step:04d}.jsonl.gz',branches,tasks)
+        rollout_path = out / f'rollouts_{step:04d}.jsonl.gz'
+        if args.method == 'ucf':
+            # The collector has persisted every actual trajectory once, before optimization.
+            os.link(out / 'ucf_logs' / f'raw_leaves_{step:04d}.jsonl.gz', rollout_path)
+        else:
+            write_rollouts(rollout_path, branches, tasks)
         print(json.dumps(record),flush=True)
         atomic_json(out/'status.json',dict(status='training',method=args.method,step=step,total_steps=cfg['steps'],pid=os.getpid(),last=record))
         if step%cfg['save_every']==0 or step==cfg['steps']:

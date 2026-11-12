@@ -1,7 +1,6 @@
 {
   "environment": "sokoban",
   "max_turns": 10,
-  "repeat_limit": 11,
   "max_response_tokens": 10240,
   "actor_device": "cuda:1",
   "vllm_memory_fraction": 0.45,

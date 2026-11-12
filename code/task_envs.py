@@ -28,8 +28,7 @@ def lake_metadata(env):
 class SokobanEnv:
     """6x6, one box, deterministic push-only moves; sparse terminal success reward.
 
-    Static walls use #, floor _, goal G; dynamic player P and box B. A corner
-    deadlock is reported for UCF but does not add a reward or terminate early.
+    Static walls use #, floor _, goal G; dynamic player P and box B.
     """
     environment='sokoban'
     def __init__(self,task,max_steps=10):
@@ -52,10 +51,6 @@ class SokobanEnv:
     def anchor(self):return (self.s,self.box[0]*6+self.box[1])
     def success(self):return self.box==self.goal
     def blocked(self,p):return not (0<=p[0]<6 and 0<=p[1]<6) or p in self.walls
-    def deadlock(self):
-        if self.success():return False
-        r,c=self.box
-        return (self.blocked((r-1,c)) or self.blocked((r+1,c))) and (self.blocked((r,c-1)) or self.blocked((r,c+1)))
     def transition(self,state,action):
         player,box=state
         dr,dc=DIRECTIONS.get(int(action),(0,0));p=(player[0]+dr,player[1]+dc)
@@ -69,7 +64,7 @@ class SokobanEnv:
         before=(self.player,self.box)
         self.player,self.box=self.transition(before,action);self.turns+=1
         done=self.success() or self.turns>=self.max_steps
-        return self.render(),float(self.success()),done,dict(action_is_effective=before!=(self.player,self.box),corner_deadlock=self.deadlock())
+        return self.render(),float(self.success()),done,dict(action_is_effective=before!=(self.player,self.box))
     def render(self):
         rows=[['#' if (r,c) in self.walls else '_' for c in range(6)] for r in range(6)]
         rows[self.goal[0]][self.goal[1]]='G'
@@ -86,17 +81,6 @@ class SokobanEnv:
                 nxt=self.transition(state,a)
                 if nxt not in seen:seen.add(nxt);q.append((nxt,path+[a]))
         return None
-    def consequence_classes(self):
-        result={0:'STAY'};state=(self.player,self.box)
-        for a in DIRECTIONS:
-            other=copy.deepcopy(self);other.player,other.box=self.transition(state,a)
-            if (other.player,other.box)==state:label='STAY'
-            elif other.success():label='GOAL'
-            elif other.deadlock():label='FAIL'
-            else:label='STATE:'+hashlib.sha256(repr((other.player,other.box)).encode()).hexdigest()
-            result[a]=label
-        return result
-
 def sokoban_agent(max_steps):
     from patr_core import FrozenLakeAgent
     class Agent(FrozenLakeAgent):
@@ -132,3 +116,31 @@ def generate_flh_map(size,p,seed, *, min_steps=7, max_steps=16):
         try:meta=lake_metadata(SimpleNamespace(desc=np.asarray(board,dtype='S1')))
         except ValueError:continue
         if min_steps<=meta['shortest_path_length']<=max_steps:return rows,meta
+
+
+def observed_state(env):
+    """State immediately after execution (or at a turn boundary during replay)."""
+    if getattr(env, 'environment', None) == 'webshop':
+        return (env.page['observation'], tuple(sorted(env.page['selected_options'].items())))
+    return env.render()
+
+
+def turn_outcome(branch):
+    """Classify the action after the shared parser/cutoff and environment step."""
+    trace = branch.trace[-1]
+    if trace['action'] is None:
+        assert branch.terminal in ('token_limit', 'context_limit')
+        return None
+    if trace['action'] == 0:
+        # A syntactically valid but unavailable WebShop command is an executed
+        # no-op. A malformed command (including an empty argument) is no action.
+        if getattr(branch.env, 'environment', None) != 'webshop':
+            return None
+        from webshop import parse_command
+        if not parse_command(trace['response'], require_argument=True):
+            return None
+    return observed_state(branch.env)
+
+
+def same_outcome(original, resample):
+    return original == resample

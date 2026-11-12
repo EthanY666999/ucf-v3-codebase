@@ -32,9 +32,14 @@ def archive_uncommitted(out, step):
             temp.replace(path)
         else:
             temp.unlink()
-    for pattern in ('rollouts_*.jsonl.gz', 'validation_*.json', 'validation_*.jsonl'):
-        for path in out.glob(pattern):
-            number = int(path.name.split('_')[1].split('.')[0])
-            if number > step:
-                archive.mkdir(parents=True, exist_ok=True)
-                path.rename(archive/path.name)
+    for folder, patterns in (
+        (out, ('rollouts_*.jsonl.gz', 'validation_*.json', 'validation_*.jsonl')),
+        (out/'ucf_logs', ('candidates_*.jsonl', 'select_*.jsonl', 'budget_*.json', 'raw_leaves_*.jsonl.gz')),
+    ):
+        for pattern in patterns:
+            for path in folder.glob(pattern):
+                number = int(path.name.rsplit('_', 1)[1].split('.')[0])
+                if number > step:
+                    destination = archive / path.relative_to(out)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    path.rename(destination)

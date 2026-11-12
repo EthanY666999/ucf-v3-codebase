@@ -38,6 +38,6 @@ python run.py --size 4b --env webshop --method ucf --smoke
 
 ## UCF 在哪里分叉
 
-同网格一样，候选点在每回合第一个开围栏后。模型可以先推理，解析器执行第一个完整 `search[...]` 或 `click[...]` 指令块。WebShop 的可执行参数是开放文本，本版按首 token 的 **SEARCH / CLICK / RESIDUAL** 三类抽补集，后续参数由模型自然续写。类外概率质量一并计入。两次点击可以到完全不同的页面，当前分层没有把它们逐一枚举。GiGPO 用同题的可见页及可见操作摘要作为状态标识。模拟器按指令编号和已执行命令重放分叉，没有把商品答案、最优路径或奖励传给选点器。
+每个回合开头都可以入选。原始轨迹和重掷都执行第一个完整的 `search[...]` 或 `click[...]` 指令块，再比较页面文字和已选规格。桥接响应的 `selected_options` 复制自上游 `env.server.user_sessions[str(goal_id)]["options"]`；商品选项点击更新这张“规格名 → 所选值”表，上游也用它给购买打分。它只参与后果比较，策略输入和 GiGPO 的可见状态标识维持原协议。训练端恢复回合起点时，按指令编号和已执行命令重放历史。[上游 SimServer 的规格记录和购买评分](https://github.com/princeton-nlp/WebShop/blob/64fa2a5c15c7daa698b9ac93f5bb5437b634c9bd/web_agent_site/envs/web_agent_text_env.py#L370-L405)
 
 随仓库的 CPU 测试用小型双商品 fixture 检查 HTTP、解析、局面重放、部分得分及 GiGPO。使用完整官方商品索引及实际 GPU 的通过条件分别是第一条现场验收和真实一轮更新。
