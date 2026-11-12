@@ -18,37 +18,28 @@
 
 ## FrozenLake 第 0 步验证
 
-2B 和 4B 各用自己的原始模型先测难档。两种规模共用同一份固定验证集，100 题、每题 4 条。每局 20 回合，整条轨迹最多生成 20,480 个回复 token。以下命令只评估验证集，完成后退出。训练机实际耗时见 `validation_0000.json` 的 `seconds`（仅采样与统计）。
+以下命令分别启动 2B 和 4B 的正式难档 GRPO4。训练先记录原始模型在固定 100 道验证题上的表现，每题采样 4 次，随后沿同一档位训练 400 步，每 25 步验证，最后评估测试集。每局最多 20 回合，整条轨迹最多生成 20,480 个回复 token。
 
 ```bash
-python run.py --size 2b --env flh --method grpo4 --model-dir /mnt/models/Qwen3.5-2B --validate-base
-python run.py --size 4b --env flh --method grpo4 --model-dir /mnt/models/Qwen3.5-4B --validate-base
+python run.py --size 2b --env flh --method grpo4 --model-dir /mnt/models/Qwen3.5-2B
+python run.py --size 4b --env flh --method grpo4 --model-dir /mnt/models/Qwen3.5-4B
 ```
 
-结果在 `RUN_ROOT/base-validation/<规模>_flh_grpo4_seed42/`。单条成功率按 400 条轨迹计，pass@4 按 100 道题计。查看 `flh_calibration.json`，两个区间都包含端点。
+正式运行的 `flh_calibration.json` 记录地图哈希、实际分数和第 0 步参考区间。成功率按 400 条轨迹计，参考区间为 5%–20%。pass@4 按 100 道题计，参考区间为 20%–50%。`below_target`、`in_target` 和 `above_target` 都是日志标签。所有分数走同一条训练流程，包括成功率和 pass@4 都为 0% 的情况。利用各步的 `validation_*.json` 和逐题 `.jsonl`，可以区分低分持续到训练结束和后期才开始学会两种情况。
 
-| 第 0 步结果 | 后续安排 |
-| --- | --- |
-| 单条成功率 5%–20%，且 pass@4 为 20%–50% | 选用该档地图，开始同起点 GRPO4、UCF 和 GiGPO |
-| 任一指标低于下限 | 难档退到中档，重新做第 0 步验证。直接启动正式难档训练时也会在第 1 次更新前检查并退出 |
-| 两项均达到下限，至少一项超过上限 | 记录为 `above_target`，保留实测数值；此协议未预设更高难度 |
+默认难档的 BFS 最短解为 7–16 步。需要单独研究中档时，在启动命令加 `--flh-difficulty medium`。它使用最短解 5–9 步的独立冻结地图，并将结果写入带 `flh_medium` 的目录。每次运行的难度由启动参数固定。
 
-中档同样使用边长 9–12 的冻结地图，预设 BFS 最短解为 5–9 步，难档为 7–16 步。两档使用独立地图，沿用相同回合数和 token 预算。若中档仍低于目标，报告中会保留 `below_target`。选择难度只使用验证集；同一模型规模的各方法和 seed 都使用选定的同一档。
+如只需测原始模型，可显式加 `--validate-base`。该命令在第 0 步结束，结果单独保存在 `RUN_ROOT/base-validation/`。用 `--until N` 可显式限定训练步数。上面的正式命令会直接完成预设的 400 步。
 
-```bash
-python run.py --size 2b --env flh --flh-difficulty medium --method grpo4 --model-dir /mnt/models/Qwen3.5-2B --validate-base
-python run.py --size 2b --env flh --flh-difficulty medium --method grpo4 --model-dir /mnt/models/Qwen3.5-2B --until 25
-```
-
-如果希望 GRPO4 在难度合适时直接训练，可以直接使用 `--until 25`。它会先做同一项第 0 步验证，低于下限时退出，处在目标区间时进入训练，可省去对该运行单独测一遍。中档运行目录名包含 `flh_medium`，两档的记录分别保存。汇总不同规模时同时列出档位和地图哈希。
+旧版若在第 0 步写下 `evaluate_medium`，当时还没有参数更新。拉取新版后，给同一难档正式命令指定新的 `--output-root`，即可保留旧记录并从同一原始模型完整开跑。
 
 ## 命令
 
 ```bash
-python run.py --size 2b --env flh --method gigpo --until 25
-python run.py --size 4b --env flh --method no-part-b --until 25
-python run.py --size 4b --env sokoban --method token-partition --seed 43 --until 25
-python run.py --size 4b --env webshop --method ucf --until 25
+python run.py --size 2b --env flh --method gigpo
+python run.py --size 4b --env flh --method no-part-b
+python run.py --size 4b --env sokoban --method token-partition --seed 43
+python run.py --size 4b --env webshop --method ucf
 ```
 
 以上命令从环境变量 `MODEL_DIR` 读取对应**同规模**模型。每个方法都独立保存。第 25、50、100 步是看历程的验证点；使用同一批验证题分析差距，保留失败和截断。测试集只在事先选定的最终训练预算评估。四个样本来自同一题，区间按题配对重采样，训练 seed 单列。

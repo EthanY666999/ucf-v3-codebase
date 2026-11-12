@@ -107,7 +107,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--size', choices=['2b','4b'], required=True)
     p.add_argument('--env', choices=['sokoban','flh','webshop'], required=True)
-    p.add_argument('--flh-difficulty', choices=['hard','medium'], help='FrozenLake map set (default: hard)')
+    p.add_argument('--flh-difficulty', choices=['hard','medium'], help='FrozenLake map set for the entire run (default: hard)')
     p.add_argument('--method', choices=read(CONFIGS/'methods.json'), required=True)
     p.add_argument('--model-dir', type=Path, default=os.environ.get('MODEL_DIR'))
     p.add_argument('--anchor16', type=Path, help='Optional original shared step-16 checkpoint; default is a fresh base')

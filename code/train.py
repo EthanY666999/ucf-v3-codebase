@@ -263,8 +263,7 @@ def flh_base_assessment(metrics, difficulty):
     else:
         outcome = 'in_target'
     return dict(difficulty=difficulty, outcome=outcome, success_rate_pct=success, pass_at_4_pct=pass4,
-                target_success_rate_pct=[5, 20], target_pass_at_4_pct=[20, 50],
-                next_difficulty='medium' if outcome == 'below_target' else difficulty)
+                target_success_rate_pct=[5, 20], target_pass_at_4_pct=[20, 50])
 
 
 def write_rollouts(path,branches,tasks,mode='wt',attempt=None):
@@ -355,13 +354,12 @@ def main():
         evaluate(engine,tokenizer,cfg,data['test'],out/'final_test.json',200042,'test')
         atomic_json(out/'status.json',dict(status='evaluation_complete',method=args.method))
         return
-    # Calibrate FLH from the untouched model on validation before any optimizer update.
+    # Record the original model's scores on the map set selected at launch.
     fresh_flh = cfg.get('environment') == 'flh' and not (args.resume or args.smoke or cfg.get('anchor16'))
     if args.validate_base or fresh_flh:
         os.environ['PATR_PROGRESS_PATH'] = str(out/'progress.json')
         base = evaluate(engine, tokenizer, cfg, data['validation'], out/'validation_0000.json', 100042, 'validation')
         print(json.dumps({'initial_validation': base}), flush=True)
-        switch_to_medium = False
         if fresh_flh:
             difficulty = cfg.get('flh_difficulty', 'hard')
             assessment = flh_base_assessment(base, difficulty)
@@ -370,10 +368,8 @@ def main():
                               dataset_sha256=cfg['dataset_sha256'], maps_sha256=cfg['frozen_maps_sha256'])
             atomic_json(out/'flh_calibration.json', assessment)
             print(json.dumps({'flh_calibration': assessment}), flush=True)
-            switch_to_medium = assessment['next_difficulty'] != difficulty
-        if args.validate_base or switch_to_medium:
-            status = 'evaluate_medium' if switch_to_medium else 'base_validation_complete'
-            atomic_json(out/'status.json', dict(status=status, step=0, method=args.method))
+        if args.validate_base:
+            atomic_json(out/'status.json', dict(status='base_validation_complete', step=0, method=args.method))
             return
     optimizer_name=cfg.get('optimizer','adamw')
     if optimizer_name=='adamw8bit':

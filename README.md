@@ -32,8 +32,7 @@ export MODEL_DIR=/mnt/models/Qwen3.5-4B
 export RUN_ROOT=/mnt/experiments/ucf-v3
 export CUDA_VISIBLE_DEVICES=0,1
 python run.py --size 4b --env sokoban --method grpo4 --smoke
-python run.py --size 4b --env sokoban --method grpo4 --until 25
-python run.py --size 4b --env sokoban --method grpo4 --resume --until 50
+python run.py --size 4b --env sokoban --method grpo4
 ```
 
 `--print-config` 输出完整训练参数，无需显卡。`--check` 校验冻结数据和模型元数据。`--smoke` 在独立目录运行 1 次参数更新，用验证题检查前后结果。`--until` 是绝对训练步数。正式任务每 25 步在固定验证集上每题采样 4 次，完整 400 步后评估测试集。原始训练命令、归档配置和从第 16 步复跑的条件见[版本与来源](docs/PROVENANCE.md)。
@@ -42,7 +41,7 @@ python run.py --size 4b --env sokoban --method grpo4 --resume --until 50
 
 每个环境先跑 `grpo4`，再跑 `ucf` 和 `gigpo`，三者分别从同一个原始模型起步。2B 做 Sokoban 和难版 FrozenLake。4B 依次做 Sokoban、难版 FrozenLake 和 WebShop。先看 seed42 的 25、50 步固定验证，再用 seed43 重复需要报告的配对。`grpo8` 衡量额外算力用于独立轨迹时的收益。[基线、消融与交回结果](docs/EXPERIMENTS.md)
 
-难版 FrozenLake 在正式训练前对 2B、4B 各做一次第 0 步验证，每个模型在固定 100 题上各采 4 条轨迹。单条成功率在 5%–20%、pass@4 在 20%–50% 时采用难版。任一指标低于下限就切到中等难度重测。每个规模的所有方法共用选定地图和 20,480 token 的整轨迹预算。[第 0 步命令与分档规则](docs/EXPERIMENTS.md#frozenlake-第-0-步验证)
+难版 FrozenLake 的正式训练从第 0 步验证开始，2B、4B 各在固定 100 题上每题采样 4 次。成功率 5%–20%、pass@4 20%–50% 是解读起点的参考区间。即使两项都是 0%，训练也在启动时选定的地图上跑完默认 400 步，每 25 步保存验证结果，最后在测试集上评估。每条轨迹的预算是 20,480 个回复 token。中档可用 `--flh-difficulty medium` 单独启动。[正式训练命令与第 0 步记录](docs/EXPERIMENTS.md#frozenlake-第-0-步验证)
 
 ## 当前能引用的结果
 
